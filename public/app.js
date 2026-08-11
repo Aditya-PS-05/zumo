@@ -23,6 +23,7 @@ const pushButton = document.querySelector("#push-button");
 const toast = document.querySelector("#toast");
 const connectionState = document.querySelector("#connection-state");
 const ctrlKey = document.querySelector("#ctrl-key");
+const imageInput = document.querySelector("#image-input");
 
 const STATUS_LABELS = {
   "needs-approval": "Needs approval",
@@ -347,6 +348,63 @@ function sendTerminal(data) {
   }
 }
 
+// Copy the current selection if there is one, otherwise the visible screen text.
+// Full-screen TUIs capture touch for their own scrolling, so on-screen selection is
+// hard — copying the visible screen is the reliable path to grabbing a Claude reply.
+async function copyTerminal() {
+  if (!terminal) return;
+  let text = terminal.hasSelection() ? terminal.getSelection() : "";
+  if (!text) {
+    const buf = terminal.buffer.active;
+    const rows = [];
+    for (let i = 0; i < terminal.rows; i++) {
+      const line = buf.getLine(buf.viewportY + i);
+      if (line) rows.push(line.translateToString(true));
+    }
+    text = rows.join("\n").replace(/[ \t]+$/gm, "").replace(/\n{3,}/g, "\n\n").trim();
+  }
+  if (!text) { showToast("Nothing to copy"); return; }
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast(`Copied ${text.length} chars`);
+  } catch {
+    showToast("Copy blocked by browser");
+  }
+}
+
+// Downscale on-device to Claude's ideal max dimension so uploads stay small and fast.
+async function scaledImageBase64(file, max = 1568) {
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, max / Math.max(bitmap.width, bitmap.height));
+  const w = Math.max(1, Math.round(bitmap.width * scale));
+  const h = Math.max(1, Math.round(bitmap.height * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  canvas.getContext("2d").drawImage(bitmap, 0, 0, w, h);
+  bitmap.close?.();
+  return canvas.toDataURL("image/jpeg", 0.85).split(",")[1];
+}
+
+// Upload an image to the daemon, then drop its saved path into Claude's prompt. Claude
+// reads image files by path, so you then type your question and hit Enter.
+async function uploadImage(file) {
+  if (!file || !currentSessionId) return;
+  if (!file.type.startsWith("image/")) { showToast("Not an image"); return; }
+  showToast("Uploading image…");
+  try {
+    const data = await scaledImageBase64(file);
+    const { path } = await api(`/api/sessions/${encodeURIComponent(currentSessionId)}/image`, {
+      method: "POST",
+      body: JSON.stringify({ data, ext: "jpg" }),
+    });
+    sendTerminal(`${path} `);
+    showToast("Image added — type your question, then ↵");
+  } catch (error) {
+    showToast(error.message || "Image upload failed");
+  }
+}
+
 // Scroll the running session, not xterm's local buffer. A mouse-tracking app (Claude
 // Code and other full-screen TUIs) gets wheel events so it scrolls its own transcript;
 // a plain shell has no mouse tracking, so we scroll xterm's local scrollback instead.
@@ -656,6 +714,8 @@ document.querySelector("#kill-button").addEventListener("click", killCurrentSess
 document.querySelector("#keybar").addEventListener("click", (event) => {
   const button = event.target.closest("button");
   if (!button) return;
+  if (button.dataset.action === "copy") { copyTerminal(); return; } // no focus: don't pop the keyboard
+  if (button.dataset.action === "image") { imageInput.click(); return; }
   if (button.dataset.control) {
     controlArmed = !controlArmed;
     button.classList.toggle("active", controlArmed);
@@ -665,6 +725,21 @@ document.querySelector("#keybar").addEventListener("click", (event) => {
     sendTerminal(KEY_SEQUENCES[button.dataset.key]);
   }
   terminal?.focus();
+});
+
+imageInput.addEventListener("change", () => {
+  const file = imageInput.files?.[0];
+  imageInput.value = ""; // allow re-picking the same file
+  if (file) uploadImage(file);
+});
+
+// Pasting an image (long-press → Paste) uploads it; text paste falls through to the terminal.
+window.addEventListener("paste", (event) => {
+  if (!currentSessionId || terminalView.hidden) return;
+  const item = [...(event.clipboardData?.items || [])].find((entry) => entry.type.startsWith("image/"));
+  if (!item) return;
+  const file = item.getAsFile();
+  if (file) { event.preventDefault(); uploadImage(file); }
 });
 
 window.addEventListener("popstate", () => {

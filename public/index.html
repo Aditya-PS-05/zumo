@@ -80,7 +80,10 @@
         <button id="kill-button" class="danger-button" type="button">Kill</button>
       </header>
       <div id="terminal" class="terminal" aria-label="Live terminal"></div>
+      <input id="image-input" type="file" accept="image/*" hidden>
       <nav id="keybar" class="keybar" aria-label="Terminal keys">
+        <button type="button" data-action="copy" aria-label="Copy screen text">Copy</button>
+        <button type="button" data-action="image" aria-label="Attach image">Img</button>
         <button type="button" data-key="escape">Esc</button>
         <button id="ctrl-key" type="button" data-control="true">Ctrl</button>
         <button type="button" data-key="tab">Tab</button>

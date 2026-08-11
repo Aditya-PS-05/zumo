@@ -1,12 +1,12 @@
 import { createServer } from "node:http";
-import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from "node:fs";
 import { join, extname, basename, resolve, relative, isAbsolute } from "node:path";
 import { homedir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { WebSocketServer, WebSocket } from "ws";
 import pty from "node-pty";
-import { CONFIG, REPO_ROOT } from "./config.js";
+import { CONFIG, REPO_ROOT, UPLOADS_DIR } from "./config.js";
 import * as tmuxMod from "./tmux.js";
 import * as state from "./state.js";
 import * as push from "./push.js";
@@ -60,6 +60,16 @@ async function readJson(req) {
 
 function slugify(name) {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "repo";
+}
+
+// Reject anything that isn't a real image before writing it to disk (magic-byte check).
+function looksLikeImage(b) {
+  if (b.length < 12) return false;
+  if (b.subarray(0, 4).toString("hex") === "89504e47") return true; // PNG
+  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return true; // JPEG
+  if (b.subarray(0, 3).toString("ascii") === "GIF") return true; // GIF
+  if (b.subarray(0, 4).toString("ascii") === "RIFF" && b.subarray(8, 12).toString("ascii") === "WEBP") return true; // WEBP
+  return false;
 }
 
 async function nextId(repo) {
@@ -176,6 +186,29 @@ async function api(req, res, url) {
     await killSession(id);
     state.remove(id);
     return json(res, 200, { ok: true });
+  }
+
+  const imageMatch = path.match(/^\/api\/sessions\/([^/]+)\/image$/);
+  if (imageMatch && method === "POST") {
+    const id = imageMatch[1];
+    if (!SESSION_ID_RE.test(id)) return json(res, 400, { error: "bad session id" });
+    if (!(await hasSession(id))) return json(res, 404, { error: "no such session" });
+    let payload;
+    try { payload = JSON.parse((await readBody(req, 16 * 1024 * 1024)) || "{}"); }
+    catch { return json(res, 400, { error: "request body must be valid JSON" }); }
+    const EXT = { png: "png", jpg: "jpg", jpeg: "jpg", gif: "gif", webp: "webp" };
+    const ext = EXT[String(payload.ext || "").toLowerCase()];
+    if (!ext) return json(res, 400, { error: "unsupported image type" });
+    let buf;
+    try { buf = Buffer.from(String(payload.data || ""), "base64"); }
+    catch { return json(res, 400, { error: "invalid image data" }); }
+    if (!buf.length) return json(res, 400, { error: "empty image" });
+    if (buf.length > 12 * 1024 * 1024) return json(res, 413, { error: "image too large (max 12 MB)" });
+    if (!looksLikeImage(buf)) return json(res, 400, { error: "data is not a recognised image" });
+    const file = join(UPLOADS_DIR, `${id}-${randomUUID()}.${ext}`);
+    try { writeFileSync(file, buf, { mode: 0o600 }); }
+    catch (e) { return json(res, 500, { error: `could not save image: ${e.message}` }); }
+    return json(res, 201, { path: file });
   }
 
   if (path === "/api/repos" && method === "GET") return json(res, 200, { repos: scanRepos() });
