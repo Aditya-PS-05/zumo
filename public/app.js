@@ -398,7 +398,7 @@ function connectTerminal() {
       return;
     }
     setConnection("Offline");
-    const delay = Math.min(1000 * (2 ** reconnectAttempt++), 15_000);
+    const delay = Math.min(500 * (2 ** reconnectAttempt++), 5_000);
     reconnectTimer = setTimeout(connectTerminal, delay);
   });
 }

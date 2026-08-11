@@ -272,10 +272,12 @@ async function attachPty(ws, id) {
   }
   let closed = false;
   let baseWatch;
+  let heartbeat;
   const cleanup = () => {
     if (closed) return;
     closed = true;
     clearInterval(baseWatch);
+    clearInterval(heartbeat);
     try { p.kill(); } catch {}
     void destroyView(view); // belt + braces with destroy-unattached
   };
@@ -285,6 +287,20 @@ async function attachPty(ws, id) {
     if (ws.readyState === WebSocket.OPEN) ws.close(1000, "session ended");
   }, 1000);
   baseWatch.unref();
+  // Keepalive: an idle Claude produces no output, so without periodic ping frames the
+  // mobile carrier NAT / tailscale proxy drops the silent TCP connection (~30-60s) and the
+  // phone sees a "connection reset". Ping every 20s to keep the path warm; browsers auto-pong.
+  // A client that misses two consecutive pongs is dead — terminate so the phone reconnects
+  // cleanly instead of streaming into a black hole.
+  ws.isAlive = true;
+  ws.on("pong", () => { ws.isAlive = true; });
+  heartbeat = setInterval(() => {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    if (ws.isAlive === false) { try { ws.terminate(); } catch {} cleanup(); return; }
+    ws.isAlive = false;
+    try { ws.ping(); } catch {}
+  }, 20_000);
+  heartbeat.unref();
   p.onData((d) => { if (ws.readyState === WebSocket.OPEN) ws.send(Buffer.from(d, "utf8"), { binary: true }); });
   p.onExit(() => { cleanup(); if (ws.readyState === WebSocket.OPEN) ws.close(1000, "session ended"); });
   ws.on("message", (data) => {
