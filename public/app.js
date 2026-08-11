@@ -60,6 +60,9 @@ let reconnectAttempt = 0;
 let resizeObserver = null;
 let controlArmed = false;
 let toastTimer;
+let lastSentCols = 0;
+let lastSentRows = 0;
+let resizeTimer = null;
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -358,12 +361,27 @@ function scrollApp(direction, steps = 3) {
   else terminal.scrollLines(direction * steps);
 }
 
+// Fit the terminal and push the size — but ONLY when it actually changed. The mobile
+// keyboard sliding in/out fires the resize observer many times per animation; every
+// resize makes Claude's full-screen TUI redraw, which is the flicker / duplicated text /
+// vanishing-output the phone sees. Deduping (skip no-op resizes) plus debouncing collapses
+// each keyboard toggle into one stable resize.
 function sendResize() {
   if (!fitAddon || !terminal) return;
   try { fitAddon.fit(); } catch { return; }
+  const { cols, rows } = terminal;
+  if (!cols || !rows) return; // transient zero size mid-layout — ignore
+  if (cols === lastSentCols && rows === lastSentRows) return;
+  lastSentCols = cols;
+  lastSentRows = rows;
   if (socket?.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify({ type: "resize", cols: terminal.cols, rows: terminal.rows }));
+    socket.send(JSON.stringify({ type: "resize", cols, rows }));
   }
+}
+
+function scheduleResize(delay = 180) {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(sendResize, delay);
 }
 
 function setConnection(label, connected = false) {
@@ -383,6 +401,7 @@ function connectTerminal() {
     if (currentSessionId !== id) return socket.close();
     reconnectAttempt = 0;
     setConnection("Live", true);
+    lastSentCols = 0; lastSentRows = 0; // force one size sync to the fresh server-side view
     sendResize();
     terminal?.focus();
   });
@@ -419,7 +438,7 @@ function setupPinchZoom(element) {
     if (event.touches.length !== 2 || !startDistance || !terminal) return;
     event.preventDefault();
     terminal.options.fontSize = Math.max(9, Math.min(24, startSize * distance(event.touches) / startDistance));
-    sendResize();
+    scheduleResize(60);
   }, { passive: false });
 }
 
@@ -484,6 +503,12 @@ function createTerminal() {
     terminal.textarea.id = "terminal-input";
     terminal.textarea.name = "terminal-input";
     terminal.textarea.autocomplete = "off";
+    // Mobile keyboards mangle terminal input: predictive text, auto-capitalise and
+    // autocorrect reinsert/duplicate characters when you edit a word. Turn them all off.
+    terminal.textarea.spellcheck = false;
+    terminal.textarea.setAttribute("autocorrect", "off");
+    terminal.textarea.setAttribute("autocapitalize", "off");
+    terminal.textarea.setAttribute("autocomplete", "off");
   }
   terminal.onData((data) => {
     if (controlArmed && data.length === 1) {
@@ -495,7 +520,7 @@ function createTerminal() {
       sendTerminal(data);
     }
   });
-  resizeObserver = new ResizeObserver(() => requestAnimationFrame(sendResize));
+  resizeObserver = new ResizeObserver(() => scheduleResize());
   resizeObserver.observe(document.querySelector("#terminal"));
   setupPinchZoom(document.querySelector("#terminal"));
   setupSwipeScroll(document.querySelector("#terminal"));
@@ -513,6 +538,10 @@ function teardownTerminal() {
   }
   resizeObserver?.disconnect();
   resizeObserver = null;
+  clearTimeout(resizeTimer);
+  resizeTimer = null;
+  lastSentCols = 0;
+  lastSentRows = 0;
   terminal?.dispose();
   terminal = null;
   fitAddon = null;
