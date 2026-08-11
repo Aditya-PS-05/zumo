@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -u
+
+sleep 1
+printf 'fake-claude session=%s\n' "${PORT23_SESSION:-missing}"
+printf 'arg=%s\n' "$@"
+sleep 10

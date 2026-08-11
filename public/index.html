@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#11130f">
+    <meta name="color-scheme" content="dark">
+    <meta name="description" content="Phone mission control for Claude Code">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="icon" href="/icon.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="/icon.svg">
+    <link rel="stylesheet" href="/vendor/xterm.css">
+    <link rel="stylesheet" href="/styles.css">
+    <title>zumo</title>
+  </head>
+  <body>
+    <main id="home-view" class="view">
+      <header class="topbar home-topbar">
+        <a class="brand" href="/" aria-label="zumo home">
+          <span class="brand-mark" aria-hidden="true">z</span>
+          <span>zumo</span>
+        </a>
+        <button id="push-button" class="quiet-button" type="button" hidden>
+          <span aria-hidden="true">◉</span> Enable alerts
+        </button>
+      </header>
+
+      <section class="overview" aria-labelledby="overview-title">
+        <div>
+          <p class="eyebrow">This machine</p>
+          <h1 id="overview-title">Agent sessions</h1>
+        </div>
+        <p id="session-summary" class="summary" aria-live="polite">Connecting…</p>
+      </section>
+
+      <nav class="home-tabs" aria-label="Session views">
+        <button class="home-tab active" type="button" data-home-tab="sessions">
+          Live <span id="live-count" class="tab-count">0</span>
+        </button>
+        <button class="home-tab" type="button" data-home-tab="history">History</button>
+      </nav>
+
+      <section id="sessions-panel">
+        <section id="session-list" class="session-list" aria-live="polite"></section>
+
+        <section id="empty-state" class="empty-state" hidden>
+          <div class="empty-orbit" aria-hidden="true"><span></span></div>
+          <h2>No managed sessions</h2>
+          <p>Launch Claude in a repository and keep the live terminal in your pocket.</p>
+          <button class="primary-button launch-trigger" type="button">Launch your first session</button>
+        </section>
+      </section>
+
+      <section id="history-panel" hidden>
+        <label class="history-search">
+          <span class="sr-only">Search Claude history</span>
+          <input id="history-search" type="search" placeholder="Search prompts or repositories…" autocomplete="off">
+        </label>
+        <p id="history-summary" class="history-summary" aria-live="polite">Loading Claude history…</p>
+        <section id="history-list" class="history-list" aria-live="polite"></section>
+        <section id="history-empty" class="history-empty" hidden>
+          <h2>No saved sessions found</h2>
+          <p>Claude conversations created on this laptop will appear here.</p>
+        </section>
+      </section>
+
+      <button id="launch-fab" class="fab launch-trigger" type="button" aria-label="Launch a session">
+        <span aria-hidden="true">+</span>
+      </button>
+    </main>
+
+    <main id="terminal-view" class="view terminal-view" hidden>
+      <header class="topbar terminal-topbar">
+        <button id="back-button" class="icon-button" type="button" aria-label="Back to sessions">←</button>
+        <div class="terminal-title">
+          <strong id="terminal-name">Session</strong>
+          <span id="connection-state" class="connection-state">Connecting</span>
+        </div>
+        <button id="kill-button" class="danger-button" type="button">Kill</button>
+      </header>
+      <div id="terminal" class="terminal" aria-label="Live terminal"></div>
+      <nav id="keybar" class="keybar" aria-label="Terminal keys">
+        <button type="button" data-key="escape">Esc</button>
+        <button id="ctrl-key" type="button" data-control="true">Ctrl</button>
+        <button type="button" data-key="tab">Tab</button>
+        <button type="button" data-scroll="up" aria-label="Scroll conversation up">⇞</button>
+        <button type="button" data-scroll="down" aria-label="Scroll conversation down">⇟</button>
+        <button type="button" data-key="up" aria-label="Arrow up">↑</button>
+        <button type="button" data-key="down" aria-label="Arrow down">↓</button>
+        <button type="button" data-key="left" aria-label="Arrow left">←</button>
+        <button type="button" data-key="right" aria-label="Arrow right">→</button>
+        <button type="button" data-key="enter" aria-label="Enter">↵</button>
+      </nav>
+    </main>
+
+    <dialog id="launch-dialog" class="launch-dialog">
+      <form id="launch-form" method="dialog">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">New agent</p>
+            <h2>Launch a session</h2>
+          </div>
+          <button id="close-dialog" class="icon-button" type="button" aria-label="Close">×</button>
+        </div>
+
+        <label>
+          <span>Repository</span>
+          <select id="repo-input" name="repo" required>
+            <option value="">Scanning repositories…</option>
+          </select>
+        </label>
+
+        <label>
+          <span>What should Claude do?</span>
+          <textarea id="prompt-input" name="prompt" rows="6" maxlength="100000" required placeholder="Review the project and continue building the highest-value unfinished feature."></textarea>
+        </label>
+
+        <details>
+          <summary>Launch options</summary>
+          <label>
+            <span>Claude flags</span>
+            <input id="args-input" name="extraArgs" type="text" placeholder="--model sonnet --permission-mode acceptEdits">
+          </label>
+          <p class="field-hint">Quotes are supported. Arguments are passed directly, never through a shell.</p>
+        </details>
+
+        <p id="launch-error" class="form-error" role="alert" hidden></p>
+        <button id="submit-launch" class="primary-button" type="submit">Launch session <span aria-hidden="true">↗</span></button>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" hidden></div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
