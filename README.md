@@ -24,7 +24,7 @@ The daemon intentionally runs under Node. `node-pty` starts under Bun on this ma
 tmux is the session substrate and `node-pty` is the terminal bridge — both work on macOS and Linux, so the daemon itself is cross-platform. What differs is the process supervisor that `bun run setup` wires up.
 
 - **Linux** — fully supported. `bun run setup` installs a **systemd** user service and a daily retention timer.
-- **macOS** — the daemon runs, but `bun run setup` on macOS does not yet install a supervisor; run it manually with `bun run start`, register the Claude `Notification`/`Stop` hooks to `bin/zumo-hook.sh`, and schedule `bin/retention.js` yourself. (Automated launchd setup is planned.)
+- **macOS** — fully supported. `bun run setup` installs **launchd** user agents (`com.zumo.daemon`, `com.zumo.retention`) in `~/Library/LaunchAgents` instead of systemd units. Install tmux with `brew install tmux`.
 - **Windows** — there is no native tmux, so native Windows is **not supported**. Run zumo inside **WSL2**, where it behaves exactly like Linux.
 
 ## Install
@@ -38,8 +38,8 @@ Setup performs the local installation:
 
 - creates `~/.zumo/config.json` and VAPID keys;
 - registers fail-silent Claude `Notification` and `Stop` hooks;
-- installs and starts the `zumo.service` user unit;
-- installs the daily recording-retention timer.
+- installs and starts the daemon as a user service (systemd on Linux, launchd on macOS);
+- installs the daily recording-retention job.
 
 Then expose the daemon only to your tailnet:
 

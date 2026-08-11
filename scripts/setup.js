@@ -49,6 +49,9 @@ function systemdQuote(value) {
 }
 
 function assertPrerequisites() {
+  if (process.platform !== "linux" && process.platform !== "darwin") {
+    throw new Error("zumo setup supports Linux and macOS only. On Windows, run zumo inside WSL2.");
+  }
   for (const command of ["node", "tmux", "claude"]) {
     try { execFileSync("which", [command], { stdio: "ignore" }); }
     catch { throw new Error(`${command} is required but was not found on PATH`); }
@@ -100,6 +103,73 @@ function installHook() {
 }
 
 function installUnits(config) {
+  return process.platform === "darwin" ? installLaunchdAgents(config) : installSystemdUnits(config);
+}
+
+function plistEscape(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+function installLaunchdAgents(config) {
+  const agentsDir = join(homedir(), "Library", "LaunchAgents");
+  mkdirSync(agentsDir, { recursive: true });
+  const node = process.execPath;
+  const logPath = join(zumoHome, "zumo.log");
+
+  const plist = (label, programArgs, extra = "") => `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>${label}</string>
+  <key>ProgramArguments</key>
+  <array>
+${programArgs.map((arg) => `    <string>${plistEscape(arg)}</string>`).join("\n")}
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>ZUMO_HOME</key><string>${plistEscape(zumoHome)}</string>
+    <key>PATH</key><string>${plistEscape(process.env.PATH || "/usr/local/bin:/usr/bin:/bin")}</string>
+  </dict>
+${extra}</dict>
+</plist>
+`;
+
+  const daemonLabel = "com.zumo.daemon";
+  const daemonPlist = plist(daemonLabel, [node, join(repoRoot, "index.ts")], [
+    `  <key>WorkingDirectory</key><string>${plistEscape(repoRoot)}</string>`,
+    "  <key>RunAtLoad</key><true/>",
+    "  <key>KeepAlive</key><true/>",
+    `  <key>StandardOutPath</key><string>${plistEscape(logPath)}</string>`,
+    `  <key>StandardErrorPath</key><string>${plistEscape(logPath)}</string>`,
+    "",
+  ].join("\n"));
+
+  const retentionLabel = "com.zumo.retention";
+  const retentionPlist = plist(retentionLabel, [node, join(repoRoot, "bin", "retention.js")], [
+    "  <key>StartCalendarInterval</key>",
+    "  <dict><key>Hour</key><integer>3</integer><key>Minute</key><integer>0</integer></dict>",
+    "",
+  ].join("\n"));
+
+  for (const [label, contents] of [[daemonLabel, daemonPlist], [retentionLabel, retentionPlist]]) {
+    const path = join(agentsDir, `${label}.plist`);
+    writeFileSync(path, contents);
+    spawnSync("launchctl", ["unload", path], { stdio: "ignore" }); // ignore: not loaded yet
+    const load = spawnSync("launchctl", ["load", "-w", path], { stdio: "inherit" });
+    if (load.status !== 0) throw new Error(`launchctl could not load ${label}`);
+  }
+
+  console.log(`\nzumo is configured on 127.0.0.1:${config.port}.`);
+  console.log(`Expose it to your tailnet with: tailscale serve --bg ${config.port}`);
+  console.log(`Logs: ${logPath}`);
+  console.log("For service startup while logged out, keep the Mac signed in (launchd user agents run per-session).");
+}
+
+function installSystemdUnits(config) {
   mkdirSync(userUnitDir, { recursive: true });
   const service = [
     "[Unit]",
