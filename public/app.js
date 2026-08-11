@@ -64,6 +64,7 @@ let toastTimer;
 let lastSentCols = 0;
 let lastSentRows = 0;
 let resizeTimer = null;
+let sessionWaitDeadline = 0;
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -484,16 +485,43 @@ function connectTerminal() {
     else terminal?.write(event.data);
   });
   socket.addEventListener("close", (event) => {
-    if (currentSessionId !== id) return;
+    if (currentSessionId !== id) return; // navigated away — do nothing
     if (event.code === 4404 || event.code === 1000) {
-      setConnection("Ended");
-      terminal?.writeln("\r\n\x1b[90m[zumo: session ended]\x1b[0m");
+      // The session ended server-side while we're still watching it. It may just be
+      // churning/resuming under the same id, so poll for it and re-attach if it comes
+      // back — only declaring "Ended" if it stays gone past the grace window.
+      setConnection("Reconnecting");
+      waitForSession(id);
       return;
     }
     setConnection("Offline");
     const delay = Math.min(500 * (2 ** reconnectAttempt++), 5_000);
     reconnectTimer = setTimeout(connectTerminal, delay);
   });
+}
+
+// Poll the session list after a server-side close; reconnect the moment the id is alive
+// again, or give up after a grace window. Makes brief session churn invisible on the phone.
+async function waitForSession(id) {
+  if (currentSessionId !== id) return;
+  if (!sessionWaitDeadline) sessionWaitDeadline = Date.now() + 30_000;
+  try {
+    const { sessions = [] } = await api("/api/sessions");
+    if (currentSessionId !== id) return;
+    if (sessions.some((s) => s.id === id && s.status !== "dead")) {
+      sessionWaitDeadline = 0;
+      reconnectAttempt = 0;
+      connectTerminal();
+      return;
+    }
+  } catch { /* daemon momentarily unreachable — keep waiting */ }
+  if (Date.now() >= sessionWaitDeadline) {
+    sessionWaitDeadline = 0;
+    setConnection("Ended");
+    terminal?.writeln("\r\n\x1b[90m[zumo: session ended]\x1b[0m");
+    return;
+  }
+  reconnectTimer = setTimeout(() => waitForSession(id), 1500);
 }
 
 function setupPinchZoom(element) {
@@ -605,6 +633,7 @@ function teardownTerminal() {
   currentSessionId = null;
   clearTimeout(reconnectTimer);
   reconnectAttempt = 0;
+  sessionWaitDeadline = 0;
   if (socket) {
     const old = socket;
     socket = null;
