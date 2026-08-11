@@ -178,6 +178,9 @@ function installSystemdUnits(config) {
     "",
     "[Service]",
     "Type=simple",
+    // Only kill the daemon on restart, never the tmux sessions it spawned into this
+    // cgroup — otherwise every restart kills running Claude sessions.
+    "KillMode=process",
     `WorkingDirectory=${repoRoot}`,
     `Environment=${systemdQuote(`ZUMO_HOME=${zumoHome}`)}`,
     `ExecStart=${systemdQuote(process.execPath)} ${systemdQuote(join(repoRoot, "index.ts"))}`,
