@@ -13,11 +13,19 @@ It complements Claude Code Remote Control: Claude owns the chat experience; zumo
 
 ## Requirements
 
-- Linux with Node.js 22+, Bun, tmux 3.1+, Claude Code, and curl
+- macOS or Linux with Node.js 22.18+, Bun, tmux 3.1+, Claude Code, and curl
 - Tailscale for private HTTPS access from the phone
 - A modern mobile browser; iOS web push requires installation to the Home Screen
 
-The daemon intentionally runs under Node. `node-pty` starts under Bun on this machine but drops PTY output; Node is the verified fallback from the approved design. Bun remains the package manager and test runner.
+The daemon intentionally runs under Node. `node-pty` starts under Bun on this machine but drops PTY output; Node is the verified fallback from the approved design. Bun remains the package manager and test runner. (Node 22.18+ is required because the entrypoint is run as `node index.ts`.)
+
+### Platform support
+
+tmux is the session substrate and `node-pty` is the terminal bridge — both work on macOS and Linux, so the daemon itself is cross-platform. What differs is the process supervisor that `bun run setup` wires up.
+
+- **Linux** — fully supported. `bun run setup` installs a **systemd** user service and a daily retention timer.
+- **macOS** — the daemon runs, but `bun run setup` on macOS does not yet install a supervisor; run it manually with `bun run start`, register the Claude `Notification`/`Stop` hooks to `bin/zumo-hook.sh`, and schedule `bin/retention.js` yourself. (Automated launchd setup is planned.)
+- **Windows** — there is no native tmux, so native Windows is **not supported**. Run zumo inside **WSL2**, where it behaves exactly like Linux.
 
 ## Install
 
