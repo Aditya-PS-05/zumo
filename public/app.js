@@ -384,6 +384,22 @@ function scheduleResize(delay = 180) {
   resizeTimer = setTimeout(sendResize, delay);
 }
 
+// Pin the terminal view to the area ABOVE the mobile keyboard. By default the soft
+// keyboard overlays the page, hiding Claude's input line at the bottom — so you edit
+// blind and erasing looks like it "appends". visualViewport reports the actually-visible
+// height (iOS + Android); we size the view to it so the input stays on screen and the
+// PTY geometry matches what's rendered.
+function syncViewportHeight() {
+  if (!window.visualViewport) return;
+  if (terminalView.hidden) { terminalView.style.height = ""; return; }
+  terminalView.style.height = `${Math.round(window.visualViewport.height)}px`;
+  scheduleResize(60);
+}
+if (window.visualViewport) {
+  window.visualViewport.addEventListener("resize", syncViewportHeight);
+  window.visualViewport.addEventListener("scroll", syncViewportHeight);
+}
+
 function setConnection(label, connected = false) {
   connectionState.textContent = label;
   connectionState.classList.toggle("connected", connected);
@@ -555,6 +571,7 @@ function showTerminal(id, updateHistory = true) {
   currentSessionId = id;
   homeView.hidden = true;
   terminalView.hidden = false;
+  syncViewportHeight();
   document.querySelector("#terminal-name").textContent = sessionLabel(sessions.find((item) => item.id === id)) || id.replace(/^p23-/, "");
   if (updateHistory && location.pathname !== `/sessions/${id}`) history.pushState({ id }, "", `/sessions/${id}`);
   createTerminal();
@@ -564,6 +581,7 @@ function showTerminal(id, updateHistory = true) {
 function showHome(updateHistory = true) {
   teardownTerminal();
   terminalView.hidden = true;
+  terminalView.style.height = "";
   homeView.hidden = false;
   if (updateHistory && location.pathname !== "/") history.pushState({}, "", "/");
   refreshSessions({ quiet: true });
