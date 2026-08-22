@@ -437,11 +437,22 @@ server.on("upgrade", (req, socket, head) => {
 });
 
 async function attachPty(ws, id) {
-  if (!(await hasSession(id))) { ws.close(4404, "no such session"); return; }
   const view = viewSessionName(id);
   // Grouped session: own client size (window-size latest), self-destroys when unattached.
   const p = pty.spawn("tmux", ["new-session", "-t", `=${id}`, "-s", view, ";", "set-option", "destroy-unattached", "on"], {
     name: "xterm-256color", cols: 80, rows: 24, cwd: process.env.HOME || homedir(), env: process.env,
+  });
+  // The browser can send its initial size as soon as the WebSocket opens. Bind before
+  // the first await or that one resize frame is lost and tmux stays at its 80x24 default.
+  ws.on("message", (data) => {
+    try {
+      if (data.length > 64 * 1024) return;
+      const msg = JSON.parse(data.toString("utf8"));
+      if (msg.type === "input" && typeof msg.data === "string") p.write(msg.data.slice(0, 16_384));
+      else if (msg.type === "resize" && Number.isInteger(msg.cols) && Number.isInteger(msg.rows) && msg.cols > 0 && msg.rows > 0) {
+        p.resize(Math.min(msg.cols, 500), Math.min(msg.rows, 200));
+      }
+    } catch { /* ignore malformed frames */ }
   });
   // Close the check-then-attach race: if the base was killed while this grouped view was
   // being spawned, the view would keep the shared window (and Claude) alive after a Kill.
@@ -485,16 +496,6 @@ async function attachPty(ws, id) {
   heartbeat.unref();
   p.onData((d) => { if (ws.readyState === WebSocket.OPEN) ws.send(Buffer.from(d, "utf8"), { binary: true }); });
   p.onExit(() => { cleanup(); if (ws.readyState === WebSocket.OPEN) ws.close(1000, "session ended"); });
-  ws.on("message", (data) => {
-    try {
-      if (data.length > 64 * 1024) return;
-      const msg = JSON.parse(data.toString("utf8"));
-      if (msg.type === "input" && typeof msg.data === "string") p.write(msg.data.slice(0, 16_384));
-      else if (msg.type === "resize" && Number.isInteger(msg.cols) && Number.isInteger(msg.rows) && msg.cols > 0 && msg.rows > 0) {
-        p.resize(Math.min(msg.cols, 500), Math.min(msg.rows, 200));
-      }
-    } catch { /* ignore malformed frames */ }
-  });
   ws.on("close", cleanup);
   ws.on("error", cleanup);
 }
