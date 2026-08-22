@@ -5,6 +5,7 @@ Mobile mission control for coding agents. Zumo runs on your workstation and give
 ## What works
 
 - Launch any installed supported agent in a scanned git repository.
+- Open local Claude sessions in Anthropic's official web or mobile UI through Remote Control.
 - Use the stable structured Codex view for streamed messages, commands, file changes, diffs, questions, and approval buttons.
 - Use the native PTY view for Claude Code, OpenCode, Pi, or raw Codex.
 - Answer Codex questions, allow or deny commands, stop work, and dismiss completed/failed work from one action inbox.
@@ -15,6 +16,8 @@ Mobile mission control for coding agents. Zumo runs on your workstation and give
 - Optionally deploy a small AWS action relay for approvals and status away from the tailnet.
 
 Zumo deliberately does not build another agent loop or proxy model APIs. The harnesses continue to own execution; Zumo owns sessions, attention, handoffs, and intervention.
+
+Claude launches enable Remote Control by default and appear at `https://claude.ai/code` under their Zumo session name. Disable the launch toggle when using API-key, Bedrock, Vertex, or Foundry authentication; those modes do not support Remote Control. The private PTY terminal remains available as a fallback.
 
 ## Requirements
 

@@ -55,7 +55,7 @@ export const AGENTS = Object.freeze({
 });
 
 const MANAGED_FLAGS = {
-  claude: ["--resume", "-r", "--continue", "-c", "--session-id", "--name"],
+  claude: ["--resume", "-r", "--continue", "-c", "--session-id", "--name", "--remote-control", "--rc"],
   codex: [],
   opencode: ["--prompt", "-p", "--session", "-s", "--continue", "-c"],
   pi: ["--session-id", "--session", "--name", "--continue", "-c"],
@@ -75,6 +75,7 @@ export function validateAgentArgs(agent, extraArgs) {
 
 export function buildAgentArgs({
   agent = "claude", extraArgs, sessionName, prompt = "", nativeSessionId = null, resumeSessionId = null,
+  remoteControl = true,
 }) {
   if (!Object.hasOwn(AGENTS, agent)) throw new Error(`unsupported agent: ${agent}`);
   if (!sessionName) throw new Error("session name is required");
@@ -87,6 +88,7 @@ export function buildAgentArgs({
         ? ["--session-id", String(nativeSessionId)]
         : null;
     if (!conversationArgs) throw new Error("Claude session id is required");
+    if (remoteControl) args.push("--remote-control");
     args.push(...conversationArgs, "--name", sessionName);
   } else if (agent === "codex") {
     if (!args.includes("--no-alt-screen")) args.push("--no-alt-screen");
@@ -102,9 +104,11 @@ export function buildAgentArgs({
   return args;
 }
 
-export function buildClaudeArgs({ extraArgs, sessionName, prompt = "", claudeSessionId, resumeSessionId = null }) {
+export function buildClaudeArgs({
+  extraArgs, sessionName, prompt = "", claudeSessionId, resumeSessionId = null, remoteControl = true,
+}) {
   return buildAgentArgs({
     agent: "claude", extraArgs, sessionName, prompt,
-    nativeSessionId: claudeSessionId, resumeSessionId,
+    nativeSessionId: claudeSessionId, resumeSessionId, remoteControl,
   });
 }

@@ -133,6 +133,7 @@ function agentOnPath(agent) {
 async function launchManaged({
   agent, repo, prompt, extraArgs = [], structured = agent === "codex",
   resumeSessionId = null, purpose = "work", parentSessionId = null, sandbox = "workspace-write",
+  remoteControl = agent === "claude",
 }) {
   if (!Object.hasOwn(AGENTS, agent)) throw new Error(`Unsupported agent: ${agent}`);
   if (!agentOnPath(agent)) throw new Error(`'${CONFIG.agentBins[agent]}' not found on PATH`);
@@ -149,7 +150,7 @@ async function launchManaged({
     }
   }
   const nativeSessionId = resumeSessionId || (["claude", "pi"].includes(agent) ? randomUUID() : null);
-  await newSession(id, { repo, prompt, extraArgs, agent, nativeSessionId, resumeSessionId });
+  await newSession(id, { repo, prompt, extraArgs, agent, nativeSessionId, resumeSessionId, remoteControl });
   state.registerLaunch(id, repo, { agent, transport, purpose, parentSessionId, nativeSessionId });
   return {
     id, agent, transport, nativeSessionId,
@@ -260,6 +261,7 @@ async function api(req, res, url) {
     const launched = await launchManaged({
       agent, repo, prompt, extraArgs: parsedArgs,
       structured: body.structured !== false, resumeSessionId,
+      remoteControl: agent === "claude" && body.remoteControl !== false,
     });
     return json(res, 201, launched);
   }

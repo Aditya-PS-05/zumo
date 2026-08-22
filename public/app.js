@@ -35,6 +35,8 @@ const submitLaunch = document.querySelector("#submit-launch");
 const agentInput = document.querySelector("#agent-input");
 const structuredOption = document.querySelector("#structured-option");
 const structuredInput = document.querySelector("#structured-input");
+const remoteControlOption = document.querySelector("#remote-control-option");
+const remoteControlInput = document.querySelector("#remote-control-input");
 const repoInput = document.querySelector("#repo-input");
 const pushButton = document.querySelector("#push-button");
 const relayButton = document.querySelector("#relay-button");
@@ -197,7 +199,19 @@ function renderSessions() {
     main.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); }
     });
-    card.append(dot, main, kill);
+    const cardActions = document.createElement("div");
+    cardActions.className = "card-actions";
+    if (session.agent === "claude" && session.status !== "dead") {
+      const remote = document.createElement("button");
+      remote.className = "card-remote";
+      remote.type = "button";
+      remote.textContent = "Claude ↗";
+      remote.setAttribute("aria-label", `Open ${sessionLabel(session)} in Claude`);
+      remote.addEventListener("click", () => window.open("https://claude.ai/code", "_blank", "noopener"));
+      cardActions.append(remote);
+    }
+    cardActions.append(kill);
+    card.append(dot, main, cardActions);
     sessionList.append(card);
   }
 
@@ -470,6 +484,7 @@ async function loadAgents() {
 
 function updateStructuredOption() {
   structuredOption.hidden = agentInput.value !== "codex";
+  remoteControlOption.hidden = agentInput.value !== "claude";
 }
 
 function openLaunchDialog() {
@@ -523,6 +538,7 @@ launchForm.addEventListener("submit", async (event) => {
     const body = {
       agent: agentInput.value,
       structured: agentInput.value === "codex" && structuredInput.checked,
+      remoteControl: agentInput.value === "claude" && remoteControlInput.checked,
       repo: repoInput.value,
       prompt: document.querySelector("#prompt-input").value,
       extraArgs: document.querySelector("#args-input").value,

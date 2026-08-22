@@ -1,4 +1,4 @@
-const CACHE = "zumo-shell-v4";
+const CACHE = "zumo-shell-v5";
 const SHELL = ["/", "/styles.css", "/app.js", "/composer.js", "/message-markup.js", "/structured-event.js", "/manifest.webmanifest", "/icon.svg", "/vendor/xterm.css", "/vendor/xterm.mjs", "/vendor/addon-fit.mjs"];
 
 self.addEventListener("install", (event) => {

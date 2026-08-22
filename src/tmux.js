@@ -47,6 +47,7 @@ export async function hasSession(id) {
 // pending file; tmux runs a fixed argv referencing only the id.
 export async function newSession(id, {
   repo, prompt, extraArgs, agent = "claude", nativeSessionId = null, resumeSessionId = null,
+  remoteControl = true,
 }) {
   const pending = join(PENDING_DIR, `${id}.json`);
   writeFileSync(pending, JSON.stringify({
@@ -58,6 +59,7 @@ export async function newSession(id, {
     port: CONFIG.port,
     nativeSessionId,
     resumeSessionId,
+    remoteControl,
   }), { flag: "wx", mode: 0o600 });
   const launcher = join(REPO_ROOT, "bin", "launch.js");
   try {

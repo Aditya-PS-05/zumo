@@ -44,6 +44,7 @@ try {
     prompt,
     nativeSessionId: launch.nativeSessionId || launch.claudeSessionId,
     resumeSessionId: launch.resumeSessionId,
+    remoteControl: launch.remoteControl !== false,
   });
 } catch (error) {
   console.error(`zumo: ${error.message}`);

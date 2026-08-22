@@ -414,6 +414,17 @@ h2 { letter-spacing: -.035em; }
   cursor: pointer;
 }
 .card-kill:active { background: rgba(255,101,93,.12); color: var(--red); }
+.card-actions { display: flex; align-items: center; gap: 4px; }
+.card-remote {
+  min-height: 34px;
+  padding: 0 9px;
+  border: 1px solid rgba(200,247,89,.28);
+  border-radius: 10px;
+  background: rgba(200,247,89,.08);
+  color: var(--acid);
+  font: 750 9px/1 ui-monospace, monospace;
+  cursor: pointer;
+}
 
 .empty-state {
   min-height: 55dvh;

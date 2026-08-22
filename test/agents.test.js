@@ -19,6 +19,7 @@ describe("buildAgentArgs", () => {
 
   test("rejects options that would replace Zumo-managed session state", () => {
     expect(() => validateAgentArgs("claude", "--resume abc")).toThrow("managed by Zumo");
+    expect(() => validateAgentArgs("claude", "--remote-control")).toThrow("managed by Zumo");
     expect(() => validateAgentArgs("opencode", "--session abc")).toThrow("managed by Zumo");
     expect(() => validateAgentArgs("pi", "--session-id abc")).toThrow("managed by Zumo");
     expect(() => validateAgentArgs("codex", "resume abc")).toThrow("must be flags");
