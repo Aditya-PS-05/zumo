@@ -1,7 +1,7 @@
 {
   "name": "zumo",
   "short_name": "zumo",
-  "description": "Phone mission control for Claude Code",
+  "description": "Phone mission control for coding agents",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

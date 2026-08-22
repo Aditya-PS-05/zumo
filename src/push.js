@@ -1,5 +1,5 @@
 import webpush from "web-push";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, renameSync } from "node:fs";
 import { CONFIG, SUBSCRIPTIONS } from "./config.js";
 
 let ready = false;
@@ -15,7 +15,9 @@ function loadSubs() {
   try { return JSON.parse(readFileSync(SUBSCRIPTIONS, "utf8")); } catch { return []; }
 }
 function saveSubs(subs) {
-  writeFileSync(SUBSCRIPTIONS, JSON.stringify(subs, null, 2));
+  const temporary = `${SUBSCRIPTIONS}.tmp-${process.pid}`;
+  writeFileSync(temporary, JSON.stringify(subs, null, 2), { mode: 0o600 });
+  renameSync(temporary, SUBSCRIPTIONS);
 }
 
 export function vapidPublicKey() {

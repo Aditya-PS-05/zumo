@@ -1,0 +1,315 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Zumo managed pairing and metadata relay (no source, transcript, diff, or PTY storage)
+
+Parameters:
+  DeviceId:
+    Type: String
+    AllowedPattern: "^[a-zA-Z0-9-]{8,80}$"
+  DeviceTokenHash:
+    Type: String
+    NoEcho: true
+    AllowedPattern: "^[a-f0-9]{64}$"
+
+Resources:
+  ConnectionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: connectionId, AttributeType: S }
+        - { AttributeName: deviceId, AttributeType: S }
+        - { AttributeName: role, AttributeType: S }
+      KeySchema:
+        - { AttributeName: connectionId, KeyType: HASH }
+      GlobalSecondaryIndexes:
+        - IndexName: DeviceIndex
+          KeySchema:
+            - { AttributeName: deviceId, KeyType: HASH }
+            - { AttributeName: role, KeyType: RANGE }
+          Projection: { ProjectionType: KEYS_ONLY }
+      TimeToLiveSpecification: { AttributeName: expiresAt, Enabled: true }
+      SSESpecification: { SSEEnabled: true }
+
+  PairingsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: codeHash, AttributeType: S }
+      KeySchema:
+        - { AttributeName: codeHash, KeyType: HASH }
+      TimeToLiveSpecification: { AttributeName: expiresAt, Enabled: true }
+      SSESpecification: { SSEEnabled: true }
+
+  DevicesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: deviceId, AttributeType: S }
+      KeySchema:
+        - { AttributeName: deviceId, KeyType: HASH }
+      SSESpecification: { SSEEnabled: true }
+
+  RelayRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ZumoRelayData
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:DeleteItem, dynamodb:Query]
+                Resource:
+                  - !GetAtt ConnectionsTable.Arn
+                  - !Sub "${ConnectionsTable.Arn}/index/DeviceIndex"
+                  - !GetAtt PairingsTable.Arn
+                  - !GetAtt DevicesTable.Arn
+              - Effect: Allow
+                Action: execute-api:ManageConnections
+                Resource: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*"
+
+  RelayFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-handler"
+      Runtime: nodejs22.x
+      Architectures: [arm64]
+      Handler: index.handler
+      Role: !GetAtt RelayRole.Arn
+      Timeout: 10
+      MemorySize: 128
+      Code: relay/
+      Environment:
+        Variables:
+          CONNECTIONS_TABLE: !Ref ConnectionsTable
+          PAIRINGS_TABLE: !Ref PairingsTable
+          DEVICES_TABLE: !Ref DevicesTable
+          DEVICE_ID: !Ref DeviceId
+          DEVICE_TOKEN_HASH: !Ref DeviceTokenHash
+
+  AuthorizerFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-authorizer"
+      Runtime: nodejs22.x
+      Architectures: [arm64]
+      Handler: index.authorize
+      Role: !GetAtt RelayRole.Arn
+      Timeout: 5
+      MemorySize: 128
+      Code: relay/
+      Environment:
+        Variables:
+          CONNECTIONS_TABLE: !Ref ConnectionsTable
+          PAIRINGS_TABLE: !Ref PairingsTable
+          DEVICES_TABLE: !Ref DevicesTable
+          DEVICE_ID: !Ref DeviceId
+          DEVICE_TOKEN_HASH: !Ref DeviceTokenHash
+
+  RelayLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-handler"
+      RetentionInDays: 14
+
+  AuthorizerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-authorizer"
+      RetentionInDays: 14
+
+  RelayErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Zumo relay Lambda returned an error
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions: [{ Name: FunctionName, Value: !Ref RelayFunction }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  AuthorizerErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Zumo relay authorizer returned an error
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions: [{ Name: FunctionName, Value: !Ref AuthorizerFunction }]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+  WebSocketApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub "${AWS::StackName}-ws"
+      ProtocolType: WEBSOCKET
+      RouteSelectionExpression: "$request.body.action"
+
+  RelayIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocketApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${RelayFunction.Arn}/invocations"
+
+  ConnectAuthorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      ApiId: !Ref WebSocketApi
+      Name: !Sub "${AWS::StackName}-connect"
+      AuthorizerType: REQUEST
+      AuthorizerUri: !Sub "arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AuthorizerFunction.Arn}/invocations"
+      IdentitySource: ["route.request.querystring.role"]
+
+  ConnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref WebSocketApi
+      RouteKey: "$connect"
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ConnectAuthorizer
+      Target: !Sub "integrations/${RelayIntegration}"
+
+  DisconnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties: { ApiId: !Ref WebSocketApi, RouteKey: "$disconnect", Target: !Sub "integrations/${RelayIntegration}" }
+  DefaultRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties: { ApiId: !Ref WebSocketApi, RouteKey: "$default", Target: !Sub "integrations/${RelayIntegration}" }
+  HelloRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties: { ApiId: !Ref WebSocketApi, RouteKey: hello, Target: !Sub "integrations/${RelayIntegration}" }
+  RegisterRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties: { ApiId: !Ref WebSocketApi, RouteKey: register, Target: !Sub "integrations/${RelayIntegration}" }
+  RelayRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties: { ApiId: !Ref WebSocketApi, RouteKey: relay, Target: !Sub "integrations/${RelayIntegration}" }
+  HeartbeatRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties: { ApiId: !Ref WebSocketApi, RouteKey: heartbeat, Target: !Sub "integrations/${RelayIntegration}" }
+
+  RelayStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref WebSocketApi
+      StageName: prod
+      AutoDeploy: true
+      DefaultRouteSettings: { ThrottlingBurstLimit: 20, ThrottlingRateLimit: 10 }
+
+  RelayInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref RelayFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*"
+
+  AuthorizerInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref AuthorizerFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocketApi}/*"
+
+  ClientBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+
+  ClientOriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AWS::StackName}-client"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  ClientHeaders:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub "${AWS::StackName}-security"
+        SecurityHeadersConfig:
+          ContentSecurityPolicy:
+            ContentSecurityPolicy: !Sub "default-src 'self'; connect-src 'self' wss://${WebSocketApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}; img-src 'self' data:; style-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+            Override: true
+          ContentTypeOptions: { Override: true }
+          FrameOptions: { FrameOption: DENY, Override: true }
+          ReferrerPolicy: { ReferrerPolicy: no-referrer, Override: true }
+          StrictTransportSecurity: { AccessControlMaxAgeSec: 31536000, IncludeSubdomains: true, Override: true, Preload: true }
+
+  ClientDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        PriceClass: PriceClass_100
+        Origins:
+          - Id: client
+            DomainName: !GetAtt ClientBucket.RegionalDomainName
+            OriginAccessControlId: !Ref ClientOriginAccessControl
+            S3OriginConfig: {}
+        DefaultCacheBehavior:
+          TargetOriginId: client
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD, OPTIONS]
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          ResponseHeadersPolicyId: !Ref ClientHeaders
+
+  ClientBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ClientBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: cloudfront.amazonaws.com }
+            Action: s3:GetObject
+            Resource: !Sub "${ClientBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${ClientDistribution}"
+
+Outputs:
+  WebSocketUrl:
+    Value: !Sub "wss://${WebSocketApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/prod"
+  ClientBucketName:
+    Value: !Ref ClientBucket
+  ClientDistributionId:
+    Value: !Ref ClientDistribution
+  ClientUrl:
+    Value: !Sub "https://${ClientDistribution.DomainName}"

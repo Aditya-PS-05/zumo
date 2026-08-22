@@ -1,7 +1,8 @@
-import { statSync, readFileSync, existsSync, openSync, readSync, closeSync, writeFileSync } from "node:fs";
+import { statSync, readFileSync, existsSync, openSync, readSync, closeSync, writeFileSync, renameSync } from "node:fs";
 import { join, basename } from "node:path";
 import { RECORDINGS_DIR, SESSIONS_META } from "./config.js";
 import { listSessions } from "./tmux.js";
+import * as actions from "./actions.js";
 
 // Status machine (per design doc):
 //   needs-approval 🔴, working 🟢, idle ⚪, dead ✖
@@ -19,23 +20,46 @@ function loadMeta() {
 function saveMeta() {
   const meta = {};
   for (const [id, s] of sessions) if (s.status !== "dead") {
-    meta[id] = { repo: s.repo, claudeSessionId: s.claudeSessionId, createdAt: s.createdAt };
+    meta[id] = {
+      repo: s.repo, agent: s.agent, transport: s.transport, purpose: s.purpose,
+      parentSessionId: s.parentSessionId, nativeSessionId: s.nativeSessionId,
+      claudeSessionId: s.claudeSessionId, createdAt: s.createdAt,
+    };
   }
-  writeFileSync(SESSIONS_META, JSON.stringify(meta, null, 2));
+  const temporary = `${SESSIONS_META}.tmp-${process.pid}`;
+  writeFileSync(temporary, JSON.stringify(meta, null, 2), { mode: 0o600 });
+  renameSync(temporary, SESSIONS_META);
 }
 
-export function registerLaunch(id, repo, claudeSessionId = null) {
+export function registerLaunch(id, repo, {
+  agent = "claude", transport = "pty", purpose = "work", parentSessionId = null, nativeSessionId = null,
+} = {}) {
   sessions.set(id, {
-    id, repo, claudeSessionId, status: "idle", createdAt: Date.now(),
+    id, repo, agent, transport, purpose, parentSessionId, nativeSessionId,
+    claudeSessionId: agent === "claude" ? nativeSessionId : null,
+    status: "idle", createdAt: Date.now(),
     lastActivity: null, lastEventAt: Date.now(), lastLine: "", recSize: 0,
   });
   saveMeta();
 }
 
+export function update(id, patch) {
+  const s = sessions.get(id);
+  if (!s) return null;
+  for (const key of ["status", "lastLine", "nativeSessionId", "lastActivity", "lastEventAt"]) {
+    if (patch[key] !== undefined) s[key] = patch[key];
+  }
+  if (patch.nativeSessionId !== undefined) saveMeta();
+  return s;
+}
+
 export function onHookEvent(id, eventName, payload) {
   const s = sessions.get(id);
   if (!s) return null;
-  if (payload?.session_id) s.claudeSessionId = String(payload.session_id);
+  if (payload?.session_id) {
+    s.nativeSessionId = String(payload.session_id);
+    if (s.agent === "claude") s.claudeSessionId = s.nativeSessionId;
+  }
   if (eventName === "Notification") s.status = "needs-approval";
   else if (eventName === "Stop" || eventName === "SubagentStop") s.status = "idle";
   else return s; // unknown events don't transition
@@ -97,17 +121,42 @@ async function poll() {
       const rec = join(RECORDINGS_DIR, `${id}.jsonl`);
       const recSize = existsSync(rec) ? statSync(rec).size : 0;
       sessions.set(id, {
-        id, repo: meta[id]?.repo || "(unknown)", claudeSessionId: meta[id]?.claudeSessionId || null,
+        id, repo: meta[id]?.repo || "(unknown)", agent: meta[id]?.agent || "claude",
+        transport: meta[id]?.transport || "pty", purpose: meta[id]?.purpose || "work",
+        parentSessionId: meta[id]?.parentSessionId || null,
+        nativeSessionId: meta[id]?.nativeSessionId || meta[id]?.claudeSessionId || null,
+        claudeSessionId: meta[id]?.claudeSessionId || null,
         status: "idle", createdAt: meta[id]?.createdAt || createdAt,
         lastActivity: null, lastEventAt: 0, lastLine: lastRecordedLine(rec, recSize) || "", recSize,
       });
     }
   }
+  let recoveredStructured = false;
+  for (const [id, saved] of Object.entries(meta)) {
+    if (saved.transport !== "structured" || sessions.has(id)) continue;
+    actions.resolveSession(id);
+    actions.add({
+      sessionId: id, agent: saved.agent, repo: saved.repo, kind: "failed",
+      title: saved.purpose === "review" ? "Review interrupted" : "Structured session interrupted",
+      detail: "Zumo restarted while this Codex session was running. Start a new session to continue.",
+      dedupeKey: `${id}:restart`,
+    });
+    recoveredStructured = true;
+  }
+  if (recoveredStructured) saveMeta();
   for (const s of sessions.values()) {
-    if (!liveIds.has(s.id) && s.status !== "dead") {
+    if (s.transport !== "structured" && !liveIds.has(s.id) && s.status !== "dead") {
       s.status = "dead";
       const rec = join(RECORDINGS_DIR, `${s.id}.jsonl`);
       s.lastLine = lastRecordedLine(rec, existsSync(rec) ? statSync(rec).size : 0) || "(no output)";
+      const kind = actions.classifyEnd(s.lastLine);
+      actions.resolveSession(s.id);
+      actions.add({
+        sessionId: s.id, agent: s.agent, repo: s.repo, kind,
+        title: s.purpose === "review" ? "Review ready" : kind === "failed" ? "Session failed" : "Session ended",
+        detail: s.lastLine,
+        dedupeKey: `${s.id}:ended`,
+      });
       saveMeta();
     }
   }

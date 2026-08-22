@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
     <meta name="theme-color" content="#11130f">
     <meta name="color-scheme" content="dark">
-    <meta name="description" content="Phone mission control for Claude Code">
+    <meta name="description" content="Phone mission control for coding agents">
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'">
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
@@ -21,9 +21,12 @@
           <span class="brand-mark" aria-hidden="true">z</span>
           <span>zumo</span>
         </a>
-        <button id="push-button" class="quiet-button" type="button" hidden>
-          <span aria-hidden="true">◉</span> Enable alerts
-        </button>
+        <div class="top-actions">
+          <button id="relay-button" class="quiet-button" type="button" hidden>Cloud pair</button>
+          <button id="push-button" class="quiet-button" type="button" hidden>
+            <span aria-hidden="true">◉</span> Enable alerts
+          </button>
+        </div>
       </header>
 
       <section class="overview" aria-labelledby="overview-title">
@@ -38,6 +41,9 @@
         <button class="home-tab active" type="button" data-home-tab="sessions">
           Live <span id="live-count" class="tab-count">0</span>
         </button>
+        <button class="home-tab" type="button" data-home-tab="actions">
+          Inbox <span id="action-count" class="tab-count">0</span>
+        </button>
         <button class="home-tab" type="button" data-home-tab="history">History</button>
       </nav>
 
@@ -47,8 +53,16 @@
         <section id="empty-state" class="empty-state" hidden>
           <div class="empty-orbit" aria-hidden="true"><span></span></div>
           <h2>No managed sessions</h2>
-          <p>Launch Claude in a repository and keep the live terminal in your pocket.</p>
+          <p>Launch a coding agent in a repository and keep the live terminal in your pocket.</p>
           <button class="primary-button launch-trigger" type="button">Launch your first session</button>
+        </section>
+      </section>
+
+      <section id="actions-panel" hidden>
+        <section id="action-list" class="action-list" aria-live="polite"></section>
+        <section id="actions-empty" class="history-empty" hidden>
+          <h2>Inbox clear</h2>
+          <p>Approvals, questions, failures, and completed work will appear here.</p>
         </section>
       </section>
 
@@ -77,13 +91,20 @@
           <strong id="terminal-name">Session</strong>
           <span id="connection-state" class="connection-state">Connecting</span>
         </div>
-        <button id="kill-button" class="danger-button" type="button">Kill</button>
+        <button id="more-button" class="icon-button" type="button" aria-label="Session actions">•••</button>
       </header>
       <div id="terminal" class="terminal" aria-label="Live terminal"></div>
+      <section id="conversation" class="conversation" aria-label="Structured agent events" hidden></section>
       <input id="image-input" type="file" accept="image/*" hidden>
+      <form id="session-composer" class="session-composer">
+        <label class="sr-only" for="session-message">Message agent</label>
+        <textarea id="session-message" rows="1" maxlength="100000" enterkeyhint="send" placeholder="Message agent…"></textarea>
+        <button id="send-message" type="submit">Send</button>
+      </form>
       <nav id="keybar" class="keybar" aria-label="Terminal keys">
         <button type="button" data-action="copy" aria-label="Copy screen text">Copy</button>
         <button type="button" data-action="image" aria-label="Attach image">Img</button>
+        <button type="button" data-action="raw" aria-label="Open raw terminal keyboard">Raw</button>
         <button type="button" data-key="escape">Esc</button>
         <button id="ctrl-key" type="button" data-control="true">Ctrl</button>
         <button type="button" data-key="tab">Tab</button>
@@ -108,6 +129,13 @@
         </div>
 
         <label>
+          <span>Agent</span>
+          <select id="agent-input" name="agent" required>
+            <option value="">Detecting installed agents…</option>
+          </select>
+        </label>
+
+        <label>
           <span>Repository</span>
           <select id="repo-input" name="repo" required>
             <option value="">Scanning repositories…</option>
@@ -115,21 +143,62 @@
         </label>
 
         <label>
-          <span>What should Claude do?</span>
+          <span>What should the agent do?</span>
           <textarea id="prompt-input" name="prompt" rows="6" maxlength="100000" required placeholder="Review the project and continue building the highest-value unfinished feature."></textarea>
         </label>
 
         <details>
           <summary>Launch options</summary>
+          <label id="structured-option" class="toggle-row" hidden>
+            <input id="structured-input" type="checkbox" checked>
+            <span><strong>Structured Codex</strong><small>Stable messages, diffs, and approval buttons. Turn off for the raw TUI.</small></span>
+          </label>
           <label>
-            <span>Claude flags</span>
-            <input id="args-input" name="extraArgs" type="text" placeholder="--model sonnet --permission-mode acceptEdits">
+            <span id="args-label">Agent flags</span>
+            <input id="args-input" name="extraArgs" type="text" placeholder="Optional CLI flags">
           </label>
           <p class="field-hint">Quotes are supported. Arguments are passed directly, never through a shell.</p>
         </details>
 
         <p id="launch-error" class="form-error" role="alert" hidden></p>
         <button id="submit-launch" class="primary-button" type="submit">Launch session <span aria-hidden="true">↗</span></button>
+      </form>
+    </dialog>
+
+    <dialog id="session-tools-dialog" class="launch-dialog session-tools-dialog">
+      <form method="dialog">
+        <div class="dialog-heading">
+          <div><p class="eyebrow">Cross-agent</p><h2>Session tools</h2></div>
+          <button id="close-session-tools" class="icon-button" type="button" aria-label="Close">×</button>
+        </div>
+        <label>
+          <span>Target harness</span>
+          <select id="target-agent-input" required></select>
+        </label>
+        <div class="session-tool-actions">
+          <button id="handoff-button" class="primary-button" type="button">Continue in target</button>
+          <button id="review-button" class="quiet-button" type="button">Independent review</button>
+        </div>
+        <p class="field-hint">Handoff carries branch, changed files, diff, and latest state. Review is read-only and supports Claude Code or Codex.</p>
+        <p id="session-tool-error" class="form-error" role="alert" hidden></p>
+        <button id="kill-button" class="danger-button session-kill" type="button">Kill current session</button>
+      </form>
+    </dialog>
+
+    <dialog id="relay-dialog" class="launch-dialog relay-dialog">
+      <form method="dialog">
+        <div class="dialog-heading">
+          <div><p class="eyebrow">AWS relay</p><h2>Pair a phone</h2></div>
+          <button id="close-relay" class="icon-button" type="button" aria-label="Close">×</button>
+        </div>
+        <p class="field-hint">Open the cloud client on your phone, then enter this one-time five-minute code.</p>
+        <output id="relay-code" class="relay-code">Connecting…</output>
+        <p id="relay-state" class="history-summary">Checking relay…</p>
+        <div class="session-tool-actions">
+          <button id="copy-relay-code" class="primary-button" type="button">Copy code</button>
+          <button id="rotate-relay-code" class="quiet-button" type="button">New code</button>
+        </div>
+        <a id="relay-client-link" class="relay-client-link" href="#" target="_blank" rel="noopener">Open cloud client ↗</a>
       </form>
     </dialog>
 

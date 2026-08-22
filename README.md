@@ -1,56 +1,80 @@
 # zumo
 
-Phone mission control for Claude Code. zumo lets you launch, monitor, and control Claude sessions on your Linux machine from a mobile PWA over Tailscale.
+Mobile mission control for coding agents. Zumo runs on your workstation and gives your phone one inbox for Claude Code, Codex, OpenCode, and Pi without replacing their models, tools, authentication, or native CLI sessions.
 
-It complements Claude Code Remote Control: Claude owns the chat experience; zumo owns the machine plane.
+## What works
 
-- Launch Claude in any scanned git repository.
+- Launch any installed supported agent in a scanned git repository.
+- Use the stable structured Codex view for streamed messages, commands, file changes, diffs, questions, and approval buttons.
+- Use the native PTY view for Claude Code, OpenCode, Pi, or raw Codex.
+- Answer Codex questions, allow or deny commands, stop work, and dismiss completed/failed work from one action inbox.
+- Hand work to another installed harness with the current branch/status/diff, or start a read-only Claude/Codex review.
 - Browse transcript-backed Claude history and resume the exact native conversation.
-- See which sessions are working, idle, or waiting for approval.
-- Open the real tmux terminal with mobile-friendly control keys.
-- Receive web-push alerts for `Notification` and `Stop` hooks.
-- Keep timestamped terminal recordings for seven days, capped at 1 GB.
+- Attach images, use mobile terminal keys, and receive web-push alerts.
+- Keep timestamped terminal recordings for seven days (1 GB cap) and uploaded images for 24 hours (256 MB cap).
+- Optionally deploy a small AWS action relay for approvals and status away from the tailnet.
+
+Zumo deliberately does not build another agent loop or proxy model APIs. The harnesses continue to own execution; Zumo owns sessions, attention, handoffs, and intervention.
 
 ## Requirements
 
-- macOS or Linux with Node.js 22.18+, Bun, tmux 3.1+, Claude Code, and curl
-- Tailscale for private HTTPS access from the phone
-- A modern mobile browser; iOS web push requires installation to the Home Screen
+- macOS or Linux with Node.js 22.18+, Bun, tmux 3.1+, curl, and at least one supported agent
+- Tailscale for the full private terminal PWA
+- A modern mobile browser; iOS web push requires installing the PWA to the Home Screen
+- Optional AWS CLI credentials and CloudFormation permissions for the managed action relay
 
-The daemon intentionally runs under Node. `node-pty` starts under Bun on this machine but drops PTY output; Node is the verified fallback from the approved design. Bun remains the package manager and test runner. (Node 22.18+ is required because the entrypoint is run as `node index.ts`.)
-
-### Platform support
-
-tmux is the session substrate and `node-pty` is the terminal bridge — both work on macOS and Linux, so the daemon itself is cross-platform. What differs is the process supervisor that `bun run setup` wires up.
-
-- **Linux** — fully supported. `bun run setup` installs a **systemd** user service and a daily retention timer.
-- **macOS** — fully supported. `bun run setup` installs **launchd** user agents (`com.zumo.daemon`, `com.zumo.retention`) in `~/Library/LaunchAgents` instead of systemd units. Install tmux with `brew install tmux`.
-- **Windows** — there is no native tmux, so native Windows is **not supported**. Run zumo inside **WSL2**, where it behaves exactly like Linux.
+Windows is supported through WSL2. Native Windows is not supported because the session substrate is tmux.
 
 ## Install
 
 ```bash
 bun install
 bun run setup
-```
-
-Setup performs the local installation:
-
-- creates `~/.zumo/config.json` and VAPID keys;
-- registers fail-silent Claude `Notification` and `Stop` hooks;
-- installs and starts the daemon as a user service (systemd on Linux, launchd on macOS);
-- installs the daily recording-retention job.
-
-Then expose the daemon only to your tailnet:
-
-```bash
 tailscale serve --bg 7323
 ```
 
-Open the printed `https://…ts.net` URL on the phone, install it as a PWA, and tap **Enable alerts**. To keep the user service running after logout:
+Setup creates `~/.zumo/config.json`, detects agent binaries, installs fail-silent Claude hooks when available, and starts a user service plus the recording-retention job. Existing `~/.port23` installations remain in place for backward compatibility.
+
+Open the `https://…ts.net` URL on your phone and install it as a PWA. On Linux, keep the user service alive after logout with:
 
 ```bash
 sudo loginctl enable-linger "$USER"
+```
+
+The daemon runs under Node because `node-pty` is unreliable under Bun on the tested host. Bun remains the package manager and test runner.
+
+### Services
+
+- Linux: `zumo.service` and `zumo-retention.timer` under systemd user services
+- macOS: `com.zumo.daemon` and `com.zumo.retention` under launchd
+
+## Optional AWS action relay
+
+The relay keeps the terminal private while making the small action inbox reachable from ordinary mobile internet:
+
+```bash
+aws sts get-caller-identity
+bun run deploy:aws
+systemctl --user restart zumo.service   # Linux
+bun run smoke:relay
+```
+
+`deploy:aws` provisions API Gateway WebSocket, two arm64 Lambda functions, three encrypted on-demand DynamoDB tables, a private S3 bucket, CloudFront, 14-day logs, throttling, concurrency caps, and error alarms. It uploads the cloud PWA and writes the generated endpoint and device credential to the mode-0600 local config.
+
+Open **Cloud pair** in the private Zumo PWA, then enter the 80-bit one-time code in the CloudFront client. Codes expire after five minutes. Pairing a new browser replaces the previous durable browser credential in this single-workstation release.
+
+The AWS relay can see only:
+
+- repository basename, harness, purpose, status, and timestamps;
+- actionable approval/question/failure text, capped at 500 characters;
+- allow, deny, answer, dismiss, refresh, and stop commands.
+
+Source, paths, diffs, transcripts, prompts, terminal bytes, harness credentials, and model keys do not enter AWS. The full terminal remains available only through the local Tailscale PWA.
+
+To deploy in another region:
+
+```bash
+bun run deploy:aws eu-west-1
 ```
 
 ## Development
@@ -58,13 +82,17 @@ sudo loginctl enable-linger "$USER"
 ```bash
 bun install
 bun run dev
-```
-
-The local app is served at [http://127.0.0.1:7323](http://127.0.0.1:7323). Useful checks:
-
-```bash
 bun test
 bun run check
+```
+
+The local app is at [http://127.0.0.1:7323](http://127.0.0.1:7323). Useful operational checks:
+
+```bash
+systemctl --user status zumo.service
+journalctl --user -u zumo.service -n 100
+curl -fsS http://127.0.0.1:7323/api/relay
+aws cloudformation describe-stacks --stack-name zumo-relay --region us-east-1
 ```
 
 Configuration lives at `~/.zumo/config.json`:
@@ -74,23 +102,19 @@ Configuration lives at `~/.zumo/config.json`:
   "port": 7323,
   "repoRoots": ["/home/you/my-work"],
   "activityWindowMs": 3000,
-  "claudeBin": "/absolute/path/to/claude",
-  "vapid": {
-    "publicKey": "…",
-    "privateKey": "…",
-    "subject": "mailto:zumo@localhost"
+  "agentBins": {
+    "claude": "/absolute/path/to/claude",
+    "codex": "/absolute/path/to/codex",
+    "opencode": "/absolute/path/to/opencode",
+    "pi": "/absolute/path/to/pi"
   }
 }
 ```
 
-`ZUMO_HOME`, `ZUMO_PORT`, and `ZUMO_CLAUDE_BIN` can override the corresponding defaults for development or testing. If a legacy `~/.port23` directory exists and `~/.zumo` does not, zumo keeps using it, so upgrades from the former `port23` name need no migration.
+`ZUMO_HOME`, `ZUMO_PORT`, `ZUMO_CLAUDE_BIN`, `ZUMO_CODEX_BIN`, `ZUMO_OPENCODE_BIN`, and `ZUMO_PI_BIN` override their defaults.
 
-## How it works
+## Security model
 
-The daemon listens only on `127.0.0.1`. `tailscale serve` supplies the HTTPS/WSS boundary required by PWA installation and web push.
+The local daemon binds only to `127.0.0.1`; Tailscale is its identity and HTTPS boundary. State-changing browser requests and PTY WebSockets must be same-origin. Prompts and arguments are passed directly to child processes, never through a shell. Pairing codes and durable cloud tokens are stored only as SHA-256 hashes in DynamoDB, and API Gateway access logging is intentionally disabled so query credentials are not recorded.
 
-Each managed session is a tmux session named `p23-<repo>-<nnn>`. Launch requests are written to a mode-0600 pending file; prompts and flags never pass through a shell parser. A PTY-backed WebSocket attaches the phone to a short-lived grouped tmux session, while `pipe-pane` writes timestamped base64 chunks to `~/.zumo/recordings/<session>.jsonl`.
-
-The **History** tab reads Claude's local `~/.claude/history.jsonl`, keeps only sessions with an existing transcript, and resumes with the original Claude UUID. Work continued on the phone therefore remains available through `claude --resume` on the laptop.
-
-The tailnet is the authentication boundary. Do not bind the daemon to a public interface or expose it through a public reverse proxy.
+Do not bind the daemon publicly or put the full terminal behind an unauthenticated reverse proxy.

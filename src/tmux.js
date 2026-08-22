@@ -45,15 +45,18 @@ export async function hasSession(id) {
 
 // Launch contract: no user data ever touches a shell parser. The prompt goes into a
 // pending file; tmux runs a fixed argv referencing only the id.
-export async function newSession(id, repo, prompt, extraArgs, { claudeSessionId, resumeSessionId = null } = {}) {
+export async function newSession(id, {
+  repo, prompt, extraArgs, agent = "claude", nativeSessionId = null, resumeSessionId = null,
+}) {
   const pending = join(PENDING_DIR, `${id}.json`);
   writeFileSync(pending, JSON.stringify({
     prompt,
     extraArgs: extraArgs || "",
     repo,
-    claudeBin: CONFIG.claudeBin,
+    agent,
+    agentBin: CONFIG.agentBins[agent],
     port: CONFIG.port,
-    claudeSessionId,
+    nativeSessionId,
     resumeSessionId,
   }), { flag: "wx", mode: 0o600 });
   const launcher = join(REPO_ROOT, "bin", "launch.js");

@@ -1,13 +1,20 @@
 import { Terminal } from "/vendor/xterm.mjs";
 import { FitAddon } from "/vendor/addon-fit.mjs";
+import { composedInput } from "/composer.js";
 
 const homeView = document.querySelector("#home-view");
 const terminalView = document.querySelector("#terminal-view");
+const terminalElement = document.querySelector("#terminal");
+const conversation = document.querySelector("#conversation");
 const sessionList = document.querySelector("#session-list");
 const emptyState = document.querySelector("#empty-state");
 const summary = document.querySelector("#session-summary");
 const overviewTitle = document.querySelector("#overview-title");
 const sessionsPanel = document.querySelector("#sessions-panel");
+const actionsPanel = document.querySelector("#actions-panel");
+const actionList = document.querySelector("#action-list");
+const actionsEmpty = document.querySelector("#actions-empty");
+const actionCount = document.querySelector("#action-count");
 const historyPanel = document.querySelector("#history-panel");
 const historyList = document.querySelector("#history-list");
 const historyEmpty = document.querySelector("#history-empty");
@@ -15,15 +22,30 @@ const historySummary = document.querySelector("#history-summary");
 const historySearch = document.querySelector("#history-search");
 const liveCount = document.querySelector("#live-count");
 const launchDialog = document.querySelector("#launch-dialog");
+const sessionToolsDialog = document.querySelector("#session-tools-dialog");
+const targetAgentInput = document.querySelector("#target-agent-input");
+const sessionToolError = document.querySelector("#session-tool-error");
+const handoffButton = document.querySelector("#handoff-button");
+const reviewButton = document.querySelector("#review-button");
 const launchForm = document.querySelector("#launch-form");
 const launchError = document.querySelector("#launch-error");
 const submitLaunch = document.querySelector("#submit-launch");
+const agentInput = document.querySelector("#agent-input");
+const structuredOption = document.querySelector("#structured-option");
+const structuredInput = document.querySelector("#structured-input");
 const repoInput = document.querySelector("#repo-input");
 const pushButton = document.querySelector("#push-button");
+const relayButton = document.querySelector("#relay-button");
+const relayDialog = document.querySelector("#relay-dialog");
+const relayCode = document.querySelector("#relay-code");
+const relayState = document.querySelector("#relay-state");
+const relayClientLink = document.querySelector("#relay-client-link");
 const toast = document.querySelector("#toast");
 const connectionState = document.querySelector("#connection-state");
 const ctrlKey = document.querySelector("#ctrl-key");
 const imageInput = document.querySelector("#image-input");
+const sessionComposer = document.querySelector("#session-composer");
+const sessionMessage = document.querySelector("#session-message");
 
 const STATUS_LABELS = {
   "needs-approval": "Needs approval",
@@ -48,6 +70,10 @@ const WHEEL_UP = "\x1b[<64;1;1M"; // toward older output
 const WHEEL_DOWN = "\x1b[<65;1;1M"; // toward newer output
 
 let sessions = [];
+let agents = [];
+let actions = [];
+let sessionsFingerprint = "";
+let actionsFingerprint = "";
 let historySessions = [];
 let homeMode = "sessions";
 let pollTimer;
@@ -65,6 +91,10 @@ let lastSentCols = 0;
 let lastSentRows = 0;
 let resizeTimer = null;
 let sessionWaitDeadline = 0;
+let currentTransport = null;
+let structuredPollTimer = null;
+const structuredNodes = new Map();
+let relayPollTimer = null;
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -83,6 +113,10 @@ function sessionLabel(session) {
     return session.repo.split(/[\\/]/).filter(Boolean).pop();
   }
   return session.id?.replace(/^p23-/, "") || "session";
+}
+
+function agentLabel(id) {
+  return agents.find((agent) => agent.id === id)?.label || id || "Agent";
 }
 
 function relativeTime(timestamp) {
@@ -145,7 +179,7 @@ function renderSessions() {
 
     const meta = document.createElement("p");
     meta.className = "session-meta";
-    meta.textContent = `${durationSince(session.createdAt)} elapsed · ${relativeTime(session.lastActivity || session.lastEventAt)}`;
+    meta.textContent = `${agentLabel(session.agent)} · ${durationSince(session.createdAt)} elapsed · ${relativeTime(session.lastActivity || session.lastEventAt)}`;
     main.append(heading, lastLine, meta);
 
     const kill = document.createElement("button");
@@ -167,6 +201,97 @@ function renderSessions() {
   emptyState.hidden = sessions.length > 0;
   document.querySelector("#launch-fab").hidden = homeMode !== "sessions" || sessions.length === 0;
   if (homeMode === "history" && historySessions.length) renderHistory();
+}
+
+function renderActions() {
+  actionList.replaceChildren();
+  actionCount.textContent = String(actions.length);
+  for (const action of actions) {
+    const card = document.createElement("article");
+    card.className = `action-card action-${action.kind}`;
+
+    const head = document.createElement("div");
+    head.className = "action-head";
+    const kind = document.createElement("span");
+    kind.className = "action-kind";
+    kind.textContent = action.kind;
+    const time = document.createElement("span");
+    time.className = "history-time";
+    time.textContent = relativeTime(action.createdAt);
+    head.append(kind, time);
+
+    const title = document.createElement("h2");
+    title.textContent = action.title;
+    const detail = document.createElement("p");
+    detail.textContent = action.detail || "Open the session for details.";
+    const meta = document.createElement("p");
+    meta.className = "action-meta";
+    meta.textContent = `${agentLabel(action.agent)} · ${action.repo?.split(/[\\/]/).filter(Boolean).pop() || "unknown repo"}`;
+
+    const footer = document.createElement("div");
+    footer.className = "action-buttons";
+    const session = sessions.find((item) => item.id === action.sessionId && item.status !== "dead");
+    if (action.kind === "approval" && action.requestId != null) {
+      const deny = document.createElement("button");
+      deny.type = "button";
+      deny.className = "quiet-button action-dismiss";
+      deny.textContent = "Deny";
+      deny.addEventListener("click", () => respondAction(action.id, "decline"));
+      const allow = document.createElement("button");
+      allow.type = "button";
+      allow.className = "resume-button";
+      allow.textContent = "Allow once";
+      allow.addEventListener("click", () => respondAction(action.id, "accept"));
+      footer.append(deny, allow);
+    } else if (session) {
+      const open = document.createElement("button");
+      open.type = "button";
+      open.className = "resume-button";
+      open.textContent = action.kind === "approval" || action.kind === "question" ? "Respond" : "Open";
+      open.addEventListener("click", () => showTerminal(action.sessionId));
+      footer.append(open);
+    }
+    const dismiss = document.createElement("button");
+    dismiss.type = "button";
+    dismiss.className = "quiet-button action-dismiss";
+    dismiss.textContent = "Dismiss";
+    dismiss.addEventListener("click", () => dismissAction(action.id));
+    if (action.requestId == null) footer.append(dismiss);
+    card.append(head, title, detail, meta, footer);
+    actionList.append(card);
+  }
+  actionsEmpty.hidden = actions.length > 0;
+  if (homeMode === "actions") summary.textContent = actions.length ? `${actions.length} need attention` : "All clear";
+}
+
+async function refreshActions({ quiet = false } = {}) {
+  try {
+    const payload = await api("/api/actions");
+    const next = payload.actions || [];
+    const fingerprint = JSON.stringify(next);
+    if (fingerprint === actionsFingerprint) return;
+    actionsFingerprint = fingerprint;
+    actions = next;
+    renderActions();
+  } catch (error) {
+    if (!quiet) showToast(error.message);
+  }
+}
+
+async function dismissAction(id) {
+  try {
+    await api(`/api/actions/${encodeURIComponent(id)}`, { method: "DELETE" });
+    await refreshActions({ quiet: true });
+  } catch (error) { showToast(error.message); }
+}
+
+async function respondAction(id, decision) {
+  try {
+    await api(`/api/actions/${encodeURIComponent(id)}/respond`, {
+      method: "POST", body: JSON.stringify({ decision }),
+    });
+    await Promise.all([refreshActions({ quiet: true }), refreshSessions({ quiet: true })]);
+  } catch (error) { showToast(error.message); }
 }
 
 function renderHistory() {
@@ -252,22 +377,28 @@ async function resumeHistorySession(item, button) {
 }
 
 function setHomeMode(mode) {
-  homeMode = mode === "history" ? "history" : "sessions";
+  homeMode = ["history", "actions"].includes(mode) ? mode : "sessions";
   sessionsPanel.hidden = homeMode !== "sessions";
+  actionsPanel.hidden = homeMode !== "actions";
   historyPanel.hidden = homeMode !== "history";
-  overviewTitle.textContent = homeMode === "history" ? "Claude history" : "Agent sessions";
+  overviewTitle.textContent = homeMode === "history" ? "Claude history" : homeMode === "actions" ? "Action inbox" : "Agent sessions";
   for (const tab of document.querySelectorAll("[data-home-tab]")) {
     tab.classList.toggle("active", tab.dataset.homeTab === homeMode);
   }
   document.querySelector("#launch-fab").hidden = homeMode !== "sessions" || sessions.length === 0;
   if (homeMode === "history") loadHistory(historySearch.value);
+  else if (homeMode === "actions") refreshActions();
   else renderSessions();
 }
 
 async function refreshSessions({ quiet = false } = {}) {
   try {
     const payload = await api("/api/sessions");
-    sessions = payload.sessions || [];
+    const next = payload.sessions || [];
+    const fingerprint = JSON.stringify(next);
+    if (fingerprint === sessionsFingerprint) return;
+    sessionsFingerprint = fingerprint;
+    sessions = next;
     renderSessions();
   } catch (error) {
     summary.textContent = "Daemon unavailable";
@@ -278,7 +409,10 @@ async function refreshSessions({ quiet = false } = {}) {
 function schedulePolling() {
   clearInterval(pollTimer);
   pollTimer = setInterval(() => {
-    if (!document.hidden && !currentSessionId) refreshSessions({ quiet: true });
+    if (!document.hidden && !currentSessionId) {
+      refreshSessions({ quiet: true });
+      refreshActions({ quiet: true });
+    }
   }, 2000);
 }
 
@@ -311,11 +445,70 @@ async function loadRepos() {
   }
 }
 
+async function loadAgents() {
+  agentInput.replaceChildren(new Option("Detecting installed agents…", ""));
+  agentInput.disabled = true;
+  try {
+    ({ agents = [] } = await api("/api/agents"));
+    agentInput.replaceChildren();
+    for (const agent of agents) {
+      const option = new Option(agent.available ? agent.label : `${agent.label} — not installed`, agent.id);
+      option.disabled = !agent.available;
+      agentInput.append(option);
+    }
+    if (!agents.some((agent) => agent.available)) agentInput.prepend(new Option("No supported agent found", ""));
+    updateStructuredOption();
+  } catch (error) {
+    agentInput.replaceChildren(new Option(error.message, ""));
+  } finally {
+    agentInput.disabled = false;
+  }
+}
+
+function updateStructuredOption() {
+  structuredOption.hidden = agentInput.value !== "codex";
+}
+
 function openLaunchDialog() {
   launchError.hidden = true;
   if (!launchDialog.open) launchDialog.showModal();
   loadRepos();
-  setTimeout(() => repoInput.focus(), 50);
+  if (!agents.length) loadAgents();
+  updateStructuredOption();
+  setTimeout(() => agentInput.focus(), 50);
+}
+
+function openSessionTools() {
+  const source = sessions.find((session) => session.id === currentSessionId);
+  if (!source) return;
+  targetAgentInput.replaceChildren();
+  for (const agent of agents.filter((item) => item.available && item.id !== source.agent)) {
+    targetAgentInput.append(new Option(agent.label, agent.id));
+  }
+  if (!targetAgentInput.options.length) targetAgentInput.append(new Option("No other harness installed", ""));
+  sessionToolError.hidden = true;
+  sessionToolsDialog.showModal();
+}
+
+async function runSessionWorkflow(kind) {
+  if (!currentSessionId || !targetAgentInput.value) return;
+  sessionToolError.hidden = true;
+  handoffButton.disabled = true;
+  reviewButton.disabled = true;
+  try {
+    const { id } = await api(`/api/sessions/${encodeURIComponent(currentSessionId)}/${kind}`, {
+      method: "POST", body: JSON.stringify({ agent: targetAgentInput.value }),
+    });
+    sessionToolsDialog.close();
+    await refreshSessions({ quiet: true });
+    showTerminal(id);
+  } catch (error) {
+    sessionToolError.textContent = error.message;
+    sessionToolError.hidden = false;
+  } finally {
+    handoffButton.disabled = false;
+    reviewButton.disabled = false;
+  }
 }
 
 launchForm.addEventListener("submit", async (event) => {
@@ -325,6 +518,8 @@ launchForm.addEventListener("submit", async (event) => {
   submitLaunch.firstChild.textContent = "Launching… ";
   try {
     const body = {
+      agent: agentInput.value,
+      structured: agentInput.value === "codex" && structuredInput.checked,
       repo: repoInput.value,
       prompt: document.querySelector("#prompt-input").value,
       extraArgs: document.querySelector("#args-input").value,
@@ -332,6 +527,7 @@ launchForm.addEventListener("submit", async (event) => {
     const { id } = await api("/api/sessions", { method: "POST", body: JSON.stringify(body) });
     launchDialog.close();
     launchForm.reset();
+    updateStructuredOption();
     await refreshSessions({ quiet: true });
     showTerminal(id);
   } catch (error) {
@@ -346,7 +542,33 @@ launchForm.addEventListener("submit", async (event) => {
 function sendTerminal(data) {
   if (socket?.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify({ type: "input", data }));
+    return true;
   }
+  return false;
+}
+
+function resizeComposer() {
+  sessionMessage.style.height = "42px";
+  sessionMessage.style.height = `${Math.min(sessionMessage.scrollHeight, 120)}px`;
+}
+
+async function sendComposedMessage() {
+  const data = composedInput(sessionMessage.value);
+  if (!data) return;
+  if (currentTransport === "structured") {
+    try {
+      await api(`/api/sessions/${encodeURIComponent(currentSessionId)}/messages`, {
+        method: "POST", body: JSON.stringify({ message: sessionMessage.value }),
+      });
+      sessionMessage.value = "";
+      resizeComposer();
+      await loadStructuredEvents();
+    } catch (error) { showToast(error.message); }
+    return;
+  }
+  if (!sendTerminal(data)) { showToast("Agent is offline — message kept"); return; }
+  sessionMessage.value = "";
+  resizeComposer();
 }
 
 // Copy the current selection if there is one, otherwise the visible screen text.
@@ -399,8 +621,10 @@ async function uploadImage(file) {
       method: "POST",
       body: JSON.stringify({ data, ext: "jpg" }),
     });
-    sendTerminal(`${path} `);
-    showToast("Image added — type your question, then ↵");
+    sessionMessage.value += `${sessionMessage.value ? " " : ""}${path} `;
+    resizeComposer();
+    sessionMessage.focus();
+    showToast("Image added to message");
   } catch (error) {
     showToast(error.message || "Image upload failed");
   }
@@ -452,11 +676,10 @@ function syncViewportHeight() {
   if (!window.visualViewport) return;
   if (terminalView.hidden) { terminalView.style.height = ""; return; }
   terminalView.style.height = `${Math.round(window.visualViewport.height)}px`;
-  scheduleResize(60);
+  if (currentTransport !== "structured") scheduleResize(sessionMessage === document.activeElement ? 300 : 180);
 }
 if (window.visualViewport) {
   window.visualViewport.addEventListener("resize", syncViewportHeight);
-  window.visualViewport.addEventListener("scroll", syncViewportHeight);
 }
 
 function setConnection(label, connected = false) {
@@ -478,7 +701,6 @@ function connectTerminal() {
     setConnection("Live", true);
     lastSentCols = 0; lastSentRows = 0; // force one size sync to the fresh server-side view
     sendResize();
-    terminal?.focus();
   });
   socket.addEventListener("message", (event) => {
     if (event.data instanceof ArrayBuffer) terminal?.write(new Uint8Array(event.data));
@@ -631,6 +853,12 @@ function createTerminal() {
 
 function teardownTerminal() {
   currentSessionId = null;
+  currentTransport = null;
+  clearInterval(structuredPollTimer);
+  structuredPollTimer = null;
+  structuredNodes.clear();
+  conversation.replaceChildren();
+  conversation.hidden = true;
   clearTimeout(reconnectTimer);
   reconnectAttempt = 0;
   sessionWaitDeadline = 0;
@@ -650,19 +878,63 @@ function teardownTerminal() {
   fitAddon = null;
   controlArmed = false;
   ctrlKey.classList.remove("active");
-  document.querySelector("#terminal").replaceChildren();
+  terminalElement.replaceChildren();
+}
+
+function renderStructuredEvents(events) {
+  const pinned = conversation.scrollHeight - conversation.scrollTop - conversation.clientHeight < 80;
+  for (const event of events) {
+    let node = structuredNodes.get(event.id);
+    if (!node) {
+      node = document.createElement("article");
+      node.className = `conversation-event event-${event.type}`;
+      const head = document.createElement("header");
+      head.append(document.createElement("strong"), document.createElement("small"));
+      node.append(head, document.createElement("pre"));
+      structuredNodes.set(event.id, node);
+      conversation.append(node);
+    }
+    node.querySelector("strong").textContent = event.title || event.type;
+    node.querySelector("small").textContent = event.status || relativeTime(event.createdAt);
+    node.querySelector("pre").textContent = event.text || "";
+  }
+  if (pinned) conversation.scrollTop = conversation.scrollHeight;
+}
+
+async function loadStructuredEvents() {
+  if (!currentSessionId || currentTransport !== "structured") return;
+  try {
+    const { events = [] } = await api(`/api/sessions/${encodeURIComponent(currentSessionId)}/events`);
+    renderStructuredEvents(events);
+    setConnection("Live", true);
+  } catch {
+    setConnection("Offline");
+  }
 }
 
 function showTerminal(id, updateHistory = true) {
   teardownTerminal();
   currentSessionId = id;
+  const session = sessions.find((item) => item.id === id);
+  currentTransport = session?.transport || "pty";
   homeView.hidden = true;
   terminalView.hidden = false;
   syncViewportHeight();
-  document.querySelector("#terminal-name").textContent = sessionLabel(sessions.find((item) => item.id === id)) || id.replace(/^p23-/, "");
+  document.querySelector("#terminal-name").textContent = sessionLabel(session) || id.replace(/^p23-/, "");
   if (updateHistory && location.pathname !== `/sessions/${id}`) history.pushState({ id }, "", `/sessions/${id}`);
-  createTerminal();
-  connectTerminal();
+  if (currentTransport === "structured") {
+    terminalElement.hidden = true;
+    conversation.hidden = false;
+    document.querySelector("#keybar").hidden = true;
+    loadStructuredEvents();
+    structuredPollTimer = setInterval(loadStructuredEvents, 800);
+  } else {
+    terminalElement.hidden = false;
+    conversation.hidden = true;
+    document.querySelector("#keybar").hidden = false;
+    createTerminal();
+    connectTerminal();
+  }
 }
 
 function showHome(updateHistory = true) {
@@ -679,6 +951,7 @@ async function killCurrentSession() {
   if (!currentSessionId || !window.confirm(`Kill ${sessionLabel(session) || currentSessionId}?`)) return;
   try {
     await api(`/api/sessions/${encodeURIComponent(currentSessionId)}`, { method: "DELETE" });
+    sessionToolsDialog.close();
     showHome();
   } catch (error) { showToast(error.message); }
 }
@@ -707,6 +980,41 @@ async function initializePush() {
   }
 }
 
+async function refreshRelayStatus() {
+  try {
+    const status = await api("/api/relay");
+    relayButton.hidden = !status.configured;
+    if (!status.configured) return;
+    relayCode.textContent = status.pairingCode;
+    const minutes = Math.max(0, Math.ceil((Number(status.expiresAt || 0) - Date.now()) / 60_000));
+    relayState.textContent = status.connected
+      ? `Connected · code expires in ${minutes}m`
+      : status.lastError || "Relay reconnecting…";
+    relayClientLink.href = status.clientUrl || "#";
+  } catch {
+    relayButton.hidden = true;
+  }
+}
+
+function openRelayDialog() {
+  refreshRelayStatus();
+  relayDialog.showModal();
+}
+
+async function rotateRelayCode() {
+  try {
+    await api("/api/relay/pair", { method: "POST", body: "{}" });
+    await refreshRelayStatus();
+  } catch (error) { showToast(error.message); }
+}
+
+async function copyRelayCode() {
+  try {
+    await navigator.clipboard.writeText(relayCode.textContent.replaceAll("-", ""));
+    showToast("Pairing code copied");
+  } catch { showToast("Copy blocked by browser"); }
+}
+
 pushButton.addEventListener("click", async () => {
   pushButton.disabled = true;
   try {
@@ -729,7 +1037,13 @@ pushButton.addEventListener("click", async () => {
   }
 });
 
+relayButton.addEventListener("click", openRelayDialog);
+document.querySelector("#close-relay").addEventListener("click", () => relayDialog.close());
+document.querySelector("#rotate-relay-code").addEventListener("click", rotateRelayCode);
+document.querySelector("#copy-relay-code").addEventListener("click", copyRelayCode);
+
 for (const trigger of document.querySelectorAll(".launch-trigger")) trigger.addEventListener("click", openLaunchDialog);
+agentInput.addEventListener("change", updateStructuredOption);
 for (const tab of document.querySelectorAll("[data-home-tab]")) {
   tab.addEventListener("click", () => setHomeMode(tab.dataset.homeTab));
 }
@@ -738,13 +1052,28 @@ historySearch.addEventListener("input", () => {
   historySearchTimer = setTimeout(() => loadHistory(historySearch.value), 250);
 });
 document.querySelector("#close-dialog").addEventListener("click", () => launchDialog.close());
+document.querySelector("#more-button").addEventListener("click", openSessionTools);
+document.querySelector("#close-session-tools").addEventListener("click", () => sessionToolsDialog.close());
+handoffButton.addEventListener("click", () => runSessionWorkflow("handoff"));
+reviewButton.addEventListener("click", () => runSessionWorkflow("review"));
 document.querySelector("#back-button").addEventListener("click", () => history.back());
 document.querySelector("#kill-button").addEventListener("click", killCurrentSession);
+sessionComposer.addEventListener("submit", (event) => {
+  event.preventDefault();
+  sendComposedMessage();
+});
+sessionMessage.addEventListener("input", resizeComposer);
+sessionMessage.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+  event.preventDefault();
+  sessionComposer.requestSubmit();
+});
 document.querySelector("#keybar").addEventListener("click", (event) => {
   const button = event.target.closest("button");
   if (!button) return;
   if (button.dataset.action === "copy") { copyTerminal(); return; } // no focus: don't pop the keyboard
   if (button.dataset.action === "image") { imageInput.click(); return; }
+  if (button.dataset.action === "raw") { terminal?.focus(); showToast("Raw terminal keyboard enabled"); return; }
   if (button.dataset.control) {
     controlArmed = !controlArmed;
     button.classList.toggle("active", controlArmed);
@@ -753,7 +1082,6 @@ document.querySelector("#keybar").addEventListener("click", (event) => {
   } else if (button.dataset.key) {
     sendTerminal(KEY_SEQUENCES[button.dataset.key]);
   }
-  terminal?.focus();
 });
 
 imageInput.addEventListener("change", () => {
@@ -779,12 +1107,16 @@ window.addEventListener("popstate", () => {
 
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) return;
-  if (currentSessionId) connectTerminal();
+  if (currentSessionId && currentTransport === "structured") loadStructuredEvents();
+  else if (currentSessionId) connectTerminal();
   else refreshSessions({ quiet: true });
 });
 
-await refreshSessions({ quiet: true });
+await loadAgents();
+await Promise.all([refreshSessions({ quiet: true }), refreshActions({ quiet: true })]);
 schedulePolling();
 initializePush();
+refreshRelayStatus();
+relayPollTimer = setInterval(refreshRelayStatus, 5_000);
 const initialSession = location.pathname.match(/^\/sessions\/([^/]+)$/)?.[1];
 if (initialSession) showTerminal(decodeURIComponent(initialSession), false);

@@ -1,0 +1,11 @@
+{
+  "name": "zumo cloud",
+  "short_name": "zumo",
+  "description": "Remote action inbox for coding agents",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#11130f",
+  "theme_color": "#11130f",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}

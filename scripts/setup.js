@@ -26,6 +26,7 @@ const configPath = join(zumoHome, "config.json");
 const hookPath = join(zumoHome, "zumo-hook.sh");
 const userUnitDir = join(homedir(), ".config", "systemd", "user");
 const claudeSettingsPath = join(homedir(), ".claude", "settings.json");
+const agentCommands = ["claude", "codex", "opencode", "pi"];
 
 function readJson(path, fallback = {}) {
   if (!existsSync(path)) return fallback;
@@ -48,23 +49,39 @@ function systemdQuote(value) {
   return `"${String(value).replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
 }
 
+function commandPath(command) {
+  try { return execFileSync("which", [command], { encoding: "utf8" }).trim(); }
+  catch { return null; }
+}
+
 function assertPrerequisites() {
   if (process.platform !== "linux" && process.platform !== "darwin") {
     throw new Error("zumo setup supports Linux and macOS only. On Windows, run zumo inside WSL2.");
   }
-  for (const command of ["node", "tmux", "claude"]) {
+  for (const command of ["node", "tmux"]) {
     try { execFileSync("which", [command], { stdio: "ignore" }); }
     catch { throw new Error(`${command} is required but was not found on PATH`); }
+  }
+  if (!agentCommands.some(commandPath)) {
+    throw new Error(`install at least one supported agent: ${agentCommands.join(", ")}`);
   }
   const version = execFileSync("tmux", ["-V"], { encoding: "utf8" }).match(/([0-9]+(?:\.[0-9]+)?)/)?.[1];
   if (!version || Number(version) < 3.1) throw new Error(`tmux >= 3.1 is required (found ${version || "unknown"})`);
 }
 
 function configureZumo() {
-  mkdirSync(join(zumoHome, "pending"), { recursive: true });
-  mkdirSync(join(zumoHome, "recordings"), { recursive: true });
+  for (const directory of [zumoHome, join(zumoHome, "pending"), join(zumoHome, "recordings"), join(zumoHome, "uploads")]) {
+    mkdirSync(directory, { recursive: true });
+    chmodSync(directory, 0o700);
+  }
+  for (const name of ["config.json", "sessions.json", "subscriptions.json", "actions.json"]) {
+    const path = join(zumoHome, name);
+    if (existsSync(path)) chmodSync(path, 0o600);
+  }
   const current = readJson(configPath);
-  const claudeBin = execFileSync("which", ["claude"], { encoding: "utf8" }).trim();
+  const detectedBins = Object.fromEntries(agentCommands.map((id) => [id, commandPath(id)]).filter(([, path]) => path));
+  const agentBins = { ...detectedBins, ...current.agentBins };
+  if (!agentBins.claude && current.claudeBin) agentBins.claude = current.claudeBin;
   const vapid = current.vapid?.publicKey && current.vapid?.privateKey
     ? current.vapid
     : { ...webpush.generateVAPIDKeys(), subject: "mailto:zumo@localhost" };
@@ -72,15 +89,17 @@ function configureZumo() {
     port: 7323,
     repoRoots: [join(homedir(), "my-work")],
     activityWindowMs: 3000,
-    claudeBin,
     ...current,
+    agentBins,
+    claudeBin: agentBins.claude || "claude",
     vapid,
   };
   writeJson(configPath, config);
   return config;
 }
 
-function installHook() {
+function installHook(config) {
+  if (!config.agentBins.claude) return;
   copyFileSync(join(repoRoot, "bin", "zumo-hook.sh"), hookPath);
   chmodSync(hookPath, 0o755);
 
@@ -134,6 +153,7 @@ ${programArgs.map((arg) => `    <string>${plistEscape(arg)}</string>`).join("\n"
     <key>ZUMO_HOME</key><string>${plistEscape(zumoHome)}</string>
     <key>PATH</key><string>${plistEscape(process.env.PATH || "/usr/local/bin:/usr/bin:/bin")}</string>
   </dict>
+  <key>Umask</key><integer>63</integer>
 ${extra}</dict>
 </plist>
 `;
@@ -179,10 +199,11 @@ function installSystemdUnits(config) {
     "[Service]",
     "Type=simple",
     // Only kill the daemon on restart, never the tmux sessions it spawned into this
-    // cgroup — otherwise every restart kills running Claude sessions.
+    // cgroup — otherwise every restart kills running agent sessions.
     "KillMode=process",
     `WorkingDirectory=${repoRoot}`,
     `Environment=${systemdQuote(`ZUMO_HOME=${zumoHome}`)}`,
+    "UMask=0077",
     `ExecStart=${systemdQuote(process.execPath)} ${systemdQuote(join(repoRoot, "index.ts"))}`,
     "Restart=on-failure",
     "RestartSec=2",
@@ -238,5 +259,5 @@ function installSystemdUnits(config) {
 
 assertPrerequisites();
 const config = configureZumo();
-installHook();
+installHook(config);
 installUnits(config);
