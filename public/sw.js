@@ -1,5 +1,5 @@
-const CACHE = "zumo-shell-v2";
-const SHELL = ["/", "/styles.css", "/app.js", "/composer.js", "/manifest.webmanifest", "/icon.svg", "/vendor/xterm.css", "/vendor/xterm.mjs", "/vendor/addon-fit.mjs"];
+const CACHE = "zumo-shell-v4";
+const SHELL = ["/", "/styles.css", "/app.js", "/composer.js", "/message-markup.js", "/structured-event.js", "/manifest.webmanifest", "/icon.svg", "/vendor/xterm.css", "/vendor/xterm.mjs", "/vendor/addon-fit.mjs"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting()));

@@ -1,6 +1,8 @@
 import { Terminal } from "/vendor/xterm.mjs";
 import { FitAddon } from "/vendor/addon-fit.mjs";
 import { composedInput } from "/composer.js";
+import { messageBlocks } from "/message-markup.js";
+import { structuredEventView } from "/structured-event.js";
 
 const homeView = document.querySelector("#home-view");
 const terminalView = document.querySelector("#terminal-view");
@@ -93,6 +95,7 @@ let resizeTimer = null;
 let sessionWaitDeadline = 0;
 let currentTransport = null;
 let structuredPollTimer = null;
+let structuredRevision = 0;
 const structuredNodes = new Map();
 let relayPollTimer = null;
 
@@ -856,6 +859,7 @@ function teardownTerminal() {
   currentTransport = null;
   clearInterval(structuredPollTimer);
   structuredPollTimer = null;
+  structuredRevision = 0;
   structuredNodes.clear();
   conversation.replaceChildren();
   conversation.hidden = true;
@@ -890,21 +894,102 @@ function renderStructuredEvents(events) {
       node.className = `conversation-event event-${event.type}`;
       const head = document.createElement("header");
       head.append(document.createElement("strong"), document.createElement("small"));
-      node.append(head, document.createElement("pre"));
+      const text = document.createElement("div");
+      text.className = "event-text";
+      const detail = document.createElement("details");
+      detail.className = "event-detail";
+      detail.append(document.createElement("summary"), document.createElement("pre"));
+      node.append(head, text, detail);
       structuredNodes.set(event.id, node);
       conversation.append(node);
     }
+    const view = structuredEventView(event);
+    node.dataset.status = event.status || "";
+    node.classList.toggle("event-collapsible", view.compact && Boolean(view.detail));
     node.querySelector("strong").textContent = event.title || event.type;
     node.querySelector("small").textContent = event.status || relativeTime(event.createdAt);
-    node.querySelector("pre").textContent = event.text || "";
+    const text = node.querySelector(".event-text");
+    if (event.type === "agent" || event.type === "user") renderMessage(text, view.text);
+    else text.textContent = view.text;
+    const detail = node.querySelector(".event-detail");
+    detail.hidden = !view.detail;
+    const summary = detail.querySelector("summary");
+    if (view.compact) {
+      const kind = document.createElement("span");
+      kind.className = "event-detail-kind";
+      kind.textContent = view.detailLabel;
+      const label = document.createElement("span");
+      label.className = "event-detail-label";
+      label.textContent = view.text;
+      const status = document.createElement("span");
+      status.className = "event-detail-status";
+      status.textContent = event.status || "";
+      summary.replaceChildren(kind, label, status);
+    } else {
+      summary.textContent = view.detailLabel;
+    }
+    detail.querySelector("pre").textContent = view.detail;
   }
   if (pinned) conversation.scrollTop = conversation.scrollHeight;
+}
+
+function appendInline(target, parts) {
+  for (const part of parts) {
+    if (part.type === "text") target.append(document.createTextNode(part.text));
+    else if (part.type === "strong") {
+      const strong = document.createElement("strong");
+      appendInline(strong, part.children);
+      target.append(strong);
+    } else if (part.type === "code") {
+      const code = document.createElement("code");
+      code.textContent = part.text;
+      target.append(code);
+    } else if (part.type === "link") {
+      const link = document.createElement("a");
+      link.textContent = part.text;
+      link.href = part.href;
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      target.append(link);
+    } else {
+      const reference = document.createElement("span");
+      reference.className = "message-reference";
+      reference.textContent = part.text;
+      reference.title = part.href;
+      target.append(reference);
+    }
+  }
+}
+
+function renderMessage(target, value) {
+  target.replaceChildren();
+  for (const block of messageBlocks(value)) {
+    if (block.type === "list") {
+      const list = document.createElement("ul");
+      for (const parts of block.items) {
+        const item = document.createElement("li");
+        appendInline(item, parts);
+        list.append(item);
+      }
+      target.append(list);
+    } else if (block.type === "code") {
+      const pre = document.createElement("pre");
+      pre.textContent = block.text;
+      target.append(pre);
+    } else {
+      const element = document.createElement(block.type === "heading" ? `h${block.level}` : "p");
+      appendInline(element, block.parts);
+      target.append(element);
+    }
+  }
 }
 
 async function loadStructuredEvents() {
   if (!currentSessionId || currentTransport !== "structured") return;
   try {
-    const { events = [] } = await api(`/api/sessions/${encodeURIComponent(currentSessionId)}/events`);
+    const payload = await api(`/api/sessions/${encodeURIComponent(currentSessionId)}/events?since=${structuredRevision}`);
+    const events = payload.events || [];
+    if (Number.isInteger(payload.revision)) structuredRevision = payload.revision;
     renderStructuredEvents(events);
     setConnection("Live", true);
   } catch {

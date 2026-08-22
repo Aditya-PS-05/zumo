@@ -10,8 +10,9 @@ const sessions = new Map();
 
 function upsert(session, event) {
   const existing = session.events.find((item) => item.id === event.id);
-  if (existing) Object.assign(existing, event);
-  else session.events.push({ createdAt: Date.now(), ...event });
+  const revision = ++session.revision;
+  if (existing) Object.assign(existing, event, { revision });
+  else session.events.push({ createdAt: Date.now(), ...event, revision });
   session.events = session.events.slice(-200);
 }
 
@@ -190,7 +191,7 @@ export async function launch({ id, repo, prompt, extraArgs = [], sandbox = "work
   });
   const session = {
     id, repo, child, events: [], pending: new Map(), requests: new Map(),
-    nextId: 1, threadId: null, activeTurnId: null, stderr: "", stopped: false, purpose,
+    nextId: 1, revision: 0, threadId: null, activeTurnId: null, stderr: "", stopped: false, purpose,
   };
   sessions.set(id, session);
   createInterface({ input: child.stdout }).on("line", (line) => handleMessage(session, line));
@@ -241,9 +242,15 @@ export async function sendMessage(id, text) {
   upsert(session, { id: `user-${Date.now()}`, type: "user", title: "You", text: message, status: "sent" });
 }
 
-export function events(id) {
+export function events(id, since = 0) {
   const session = sessions.get(id);
-  return session ? session.events.map((event) => ({ ...event })) : null;
+  if (!session) return null;
+  return {
+    revision: session.revision,
+    events: session.events
+      .filter((event) => event.revision > since)
+      .map(({ revision, ...event }) => ({ ...event })),
+  };
 }
 
 export function respond(id, requestId, decision) {

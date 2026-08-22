@@ -308,8 +308,8 @@ async function api(req, res, url) {
 
   const eventsMatch = path.match(/^\/api\/sessions\/([^/]+)\/events$/);
   if (eventsMatch && method === "GET") {
-    const events = codexDriver.events(eventsMatch[1]);
-    return events ? json(res, 200, { events }) : json(res, 404, { error: "structured session not found" });
+    const payload = codexDriver.events(eventsMatch[1], Math.max(0, Number(url.searchParams.get("since")) || 0));
+    return payload ? json(res, 200, payload) : json(res, 404, { error: "structured session not found" });
   }
 
   const messagesMatch = path.match(/^\/api\/sessions\/([^/]+)\/messages$/);

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { generatePairingCode } from "../src/relay.js";
+import { generatePairingCode } from "../src/pairing.js";
 
 test("pairing codes carry 80 bits in typo-resistant base32", () => {
   const codes = new Set(Array.from({ length: 100 }, generatePairingCode));

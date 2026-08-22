@@ -1,8 +1,7 @@
-import { randomBytes } from "node:crypto";
 import WebSocket from "ws";
 import { CONFIG } from "./config.js";
+import { generatePairingCode } from "./pairing.js";
 
-const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 let socket = null;
 let reconnectTimer = null;
 let heartbeatTimer = null;
@@ -15,22 +14,6 @@ let lastError = "";
 let lastSnapshot = "";
 let snapshotProvider = () => ({ sessions: [], actions: [] });
 let commandHandler = async () => ({ ok: false, error: "relay command handler unavailable" });
-
-export function generatePairingCode() {
-  const bytes = randomBytes(10);
-  let bits = 0;
-  let value = 0;
-  let output = "";
-  for (const byte of bytes) {
-    value = (value << 8) | byte;
-    bits += 8;
-    while (bits >= 5) {
-      output += alphabet[(value >>> (bits - 5)) & 31];
-      bits -= 5;
-    }
-  }
-  return output.slice(0, 16);
-}
 
 function send(message) {
   if (socket?.readyState !== WebSocket.OPEN) return false;
